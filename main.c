@@ -94,7 +94,7 @@ int main() {
       case CMD_HELP:
         printf( 
             "Available commands:\n"
-            "  WRITE [(key,value),(key2,value2),...]\n"
+            "  WRITE [(key,value)(key2,value2),...]\n"
             "  READ [key,key2,...]\n"
             "  DELETE [key,key2,...]\n"
             "  SHOW\n"
