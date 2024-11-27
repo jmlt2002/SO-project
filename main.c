@@ -6,10 +6,17 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <sys/wait.h>
 
 #include "constants.h"
 #include "parser.h"
 #include "operations.h"
+
+void format_backup_path(char* dest_backup_path, char* file_path_no_ext, int backup_number) {
+    memset(dest_backup_path, 0, MAX_PATH_SIZE);
+
+    sprintf(dest_backup_path, "%s-%d.bck", file_path_no_ext, backup_number);
+}
 
 int main(int argc, char *argv[]) {
 
@@ -20,7 +27,7 @@ int main(int argc, char *argv[]) {
 
   char *dir_path = argv[1];
   int max_backups = atoi(argv[2]);
-
+  int running_backups = 0;
   if (access(dir_path, F_OK) == -1) {
     fprintf(stderr, "ERROR: file path '%s' does not exist\n", dir_path);
     return 1;
@@ -56,6 +63,7 @@ int main(int argc, char *argv[]) {
 
     // format input file_path
     char file_path[MAX_PATH_SIZE];
+    char file_path_no_ext[MAX_PATH_SIZE];
     strcpy(file_path, dir_path);
     if (dir_path[strlen(dir_path) - 1] != '/') {
       strcat(file_path, "/");
@@ -69,6 +77,7 @@ int main(int argc, char *argv[]) {
     if (dot_pos != NULL) {
       *dot_pos = '\0';
     }
+    strcpy(file_path_no_ext, output_path);
     strcat(output_path, ".out");
 
     // open for reading input file
@@ -87,6 +96,10 @@ int main(int argc, char *argv[]) {
     }
 
     int done = 0;
+    int backup_count = 0;
+    char backup_path[MAX_PATH_SIZE];
+
+
     while (!done) {
         char keys[MAX_WRITE_SIZE][MAX_STRING_SIZE] = {0};
         char values[MAX_WRITE_SIZE][MAX_STRING_SIZE] = {0};
@@ -148,9 +161,19 @@ int main(int argc, char *argv[]) {
                 break;
 
             case CMD_BACKUP:
-                if (kvs_backup()) {
-                  fprintf(stderr, "Failed to perform backup.\n");
+                format_backup_path(backup_path, file_path_no_ext, backup_count+1);
+                if (running_backups >= max_backups) {
+                    wait(NULL);
+                    running_backups -= 1;
                 }
+
+                if (kvs_backup(backup_path)) {
+                  fprintf(stderr, "Failed to perform backup.\n");
+                } else {
+                    backup_count += 1;
+                    running_backups += 1;
+                }
+
                 break;
 
             case CMD_INVALID:

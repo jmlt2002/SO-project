@@ -38,8 +38,9 @@ void kvs_show(int out_fd);
 
 /// Creates a backup of the KVS state and stores it in the correspondent
 /// backup file
+/// @param backup_path C_String path to backup file.
 /// @return 0 if the backup was successful, 1 otherwise.
-int kvs_backup();
+int kvs_backup(char *backup_path);
 
 /// Waits for the last backup to be called.
 void kvs_wait_backup();
