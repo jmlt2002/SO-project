@@ -123,15 +123,16 @@ void kvs_show(int out_fd) {
 }
 
 int kvs_backup(char* backup_path) {
+    int bck_fd = open(backup_path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
     pid_t pid = fork();
     if (pid < 0) return pid;
     if (pid == 0) {
-        int bck_fd = open(backup_path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
-        fsync(bck_fd);  // alternativa a O_SYNC
         kvs_show(bck_fd);
-        close(bck_fd);
-        return 0;
+        exit(0);
     }
+    fsync(bck_fd);  // alternativa a O_SYNC
+    close(bck_fd);
+    
     return 0;
 }
 
