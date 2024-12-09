@@ -208,5 +208,9 @@ int main(int argc, char *argv[]) {
   }
   kvs_terminate();
   closedir(dir);
+
+  // wait for child processes to finish
+  while (wait(NULL) > 0);
+
   return 0;
 }
