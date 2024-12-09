@@ -130,7 +130,7 @@ int kvs_backup(char* backup_path) {
         fsync(bck_fd);  // alternativa a O_SYNC
         kvs_show(bck_fd);
         close(bck_fd);
-        exit(0);
+        return 0;
     }
     return 0;
 }
