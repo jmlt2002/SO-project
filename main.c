@@ -179,6 +179,7 @@ void* process_job_file(void* arg) {
 
     free(dir_path);
     free(job_file);
+    free(args[2]);
     free(args);
 
     sem_post(&semaphore);
@@ -305,8 +306,9 @@ int main(int argc, char *argv[]) {
     }
 
     free(threads);
+
     sem_destroy(&semaphore);
     closedir(dir);
-
+    kvs_terminate();
     return 0;
 }
