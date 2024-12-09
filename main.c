@@ -16,6 +16,9 @@
 #include "parser.h"
 #include "operations.h"
 
+pthread_t *MAIN_THREADS;
+DIR *MAIN_DIR;
+
 sem_t semaphore;
 int running_backups = 0;
 
@@ -219,25 +222,25 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    DIR *dir = opendir(dir_path);
-    if (!dir) {
+    MAIN_DIR = opendir(dir_path);
+    if (!MAIN_DIR) {
         fprintf(stderr, "ERROR: Unable to open directory '%s'\n", dir_path);
         sem_destroy(&semaphore);
         return 1;
     }
 
     struct dirent *entry;
-    pthread_t *threads = (pthread_t*)malloc((size_t)max_threads * sizeof(pthread_t));
-    if (threads == NULL) {
-        fprintf(stderr, "ERROR: Failed to allocate memory for threads\n");
+    MAIN_THREADS = (pthread_t*)malloc((size_t)max_threads * sizeof(pthread_t));
+    if (MAIN_THREADS == NULL) {
+        fprintf(stderr, "ERROR: Failed to allocate memory for MAIN_THREADS\n");
         sem_destroy(&semaphore);
-        closedir(dir);
+        closedir(MAIN_DIR);
         return 1;
     }
 
     int thread_count = 0;
 
-    while ((entry = readdir(dir)) != NULL) {
+    while ((entry = readdir(MAIN_DIR)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
@@ -273,15 +276,15 @@ int main(int argc, char *argv[]) {
 
         printf("Processing job: %s\n", entry->d_name);
 
-        pthread_create(&threads[thread_count], NULL, process_job_file, (void*)args);
+        pthread_create(&MAIN_THREADS[thread_count], NULL, process_job_file, (void*)args);
         thread_count++;
         int finished = 0;
         while(1) {
             for (int i = 0; i < thread_count; i++) {
-                int result = pthread_tryjoin_np(threads[i], NULL);
+                int result = pthread_tryjoin_np(MAIN_THREADS[i], NULL);
                 if (result == 0) {
                     for (int j = i; j < thread_count - 1; j++) {
-                        threads[j] = threads[j + 1];
+                        MAIN_THREADS[j] = MAIN_THREADS[j + 1];
                     }
                     thread_count--;
                     i--;
@@ -302,13 +305,14 @@ int main(int argc, char *argv[]) {
     }
 
     for (int i = 0; i < thread_count; i++) {
-        pthread_join(threads[i], NULL);
+        pthread_join(MAIN_THREADS[i], NULL);
     }
 
-    free(threads);
+    free(MAIN_THREADS);
 
     sem_destroy(&semaphore);
-    closedir(dir);
+    closedir(MAIN_DIR);
+    while (wait(NULL) > 0);
     kvs_terminate();
     return 0;
 }

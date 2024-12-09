@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <dirent.h>
 
 #include "kvs.h"
 #include "constants.h"
@@ -15,6 +16,9 @@ typedef struct {
 } ThreadSafeHashTable;
 
 static ThreadSafeHashTable kvs_store = { NULL, PTHREAD_RWLOCK_INITIALIZER };
+
+extern pthread_t *MAIN_THREADS;
+extern DIR *MAIN_DIR;
 
 /// Calculates a timespec from a delay in milliseconds.
 /// @param delay_ms Delay in milliseconds.
@@ -157,6 +161,8 @@ int kvs_backup(char* backup_path) {
     if (pid < 0) return pid;
     if (pid == 0) {
         kvs_show(bck_fd);
+        free(MAIN_THREADS);
+        closedir(MAIN_DIR);
         exit(0);
     }
     fsync(bck_fd);  // alternativa a O_SYNC
