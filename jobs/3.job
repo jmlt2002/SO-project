@@ -9,17 +9,6 @@ WRITE [(chave2,valor-exemplo2)(umaChave,umValor)]
 # backup
 BACKUP
 BACKUP
-BACKUP
-BACKUP
-BACKUP
-BACKUP
-BACKUP
-BACKUP
-BACKUP
-BACKUP
-BACKUP
-BACKUP
-BACKUP
 # Eliminação de chave existente e de chave não existente
 DELETE [c1,chaveAleatoria]
 #Espera de um segundo
