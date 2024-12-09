@@ -157,6 +157,8 @@ int kvs_backup(char* backup_path) {
     if (pid < 0) return pid;
     if (pid == 0) {
         kvs_show(bck_fd);
+        free(threads);
+        closedir(dir);
         exit(0);
     }
     fsync(bck_fd);  // alternativa a O_SYNC

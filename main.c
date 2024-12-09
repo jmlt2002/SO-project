@@ -10,36 +10,42 @@
 #include <dirent.h>
 #include <sys/wait.h>
 #include <pthread.h>
-#include <semaphore.h>
 
 #include "constants.h"
 #include "parser.h"
 #include "operations.h"
 
-sem_t semaphore;
+pthread_t *threads = NULL;
+DIR *dir = NULL;
+
+pthread_mutex_t thread_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t thread_cond = PTHREAD_COND_INITIALIZER;
+int active_threads = 0;
 int running_backups = 0;
+int max_backups = 0;
+
+typedef struct {
+    char *dir_path;
+    char *job_file;
+} job_t;
+
+pthread_mutex_t job_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void format_backup_path(char* dest_backup_path, char* file_path_no_ext, int backup_number) {
     memset(dest_backup_path, 0, MAX_PATH_SIZE);
     sprintf(dest_backup_path, "%s-%d.bck", file_path_no_ext, backup_number);
 }
 
-// thread function to process each job file
 void* process_job_file(void* arg) {
-    char** args = (char**)arg;
-    char* dir_path = args[0];
-    char* job_file = args[1];
-    int max_backups = atoi(args[2]);
-
-    printf("Thread started\n");
+    job_t *job = (job_t*)arg;
 
     char file_path[MAX_PATH_SIZE];
     char file_path_no_ext[MAX_PATH_SIZE];
-    strcpy(file_path, dir_path);
-    if (dir_path[strlen(dir_path) - 1] != '/') {
+    strcpy(file_path, job->dir_path);
+    if (job->dir_path[strlen(job->dir_path) - 1] != '/') {
         strcat(file_path, "/");
     }
-    strcat(file_path, job_file);
+    strcat(file_path, job->job_file);
 
     // format output_path
     char output_path[MAX_PATH_SIZE];
@@ -55,6 +61,7 @@ void* process_job_file(void* arg) {
     int in_fd = open(file_path, O_RDONLY);
     if (in_fd == -1) {
         fprintf(stderr, "ERROR: Unable to open file '%s'\n", file_path);
+        free(job);
         return NULL;
     }
 
@@ -63,6 +70,7 @@ void* process_job_file(void* arg) {
     if (out_fd == -1) {
         fprintf(stderr, "ERROR: Unable to open output file '%s' for writing\n", output_path);
         close(in_fd);
+        free(job);
         return NULL;
     }
 
@@ -138,7 +146,7 @@ void* process_job_file(void* arg) {
                 }
 
                 if (kvs_backup(backup_path)) {
-                  fprintf(stderr, "Failed to perform backup.\n");
+                    fprintf(stderr, "Failed to perform backup.\n");
                 } else {
                     backup_count += 1;
                     running_backups += 1;
@@ -177,40 +185,29 @@ void* process_job_file(void* arg) {
     close(in_fd);
     close(out_fd);
 
-    free(dir_path);
-    free(job_file);
-    free(args[2]);
-    free(args);
+    pthread_mutex_lock(&thread_mutex);
+    active_threads--;
+    pthread_cond_signal(&thread_cond);
+    pthread_mutex_unlock(&thread_mutex);
 
-    sem_post(&semaphore);
-
-    printf("Thread finished\n");
-
+    free(job->dir_path);
+    free(job->job_file);
+    free(job);
     return NULL;
 }
 
 int main(int argc, char *argv[]) {
     if (argc != 4) {
-        fprintf(stderr, "USAGE: ./kvs <path_to_jobs> <backup_number> <max_threads>\n");
+        fprintf(stderr, "USAGE: ./kvs <path_to_jobs> <max_backups> <max_threads>\n");
         return 1;
     }
 
     char *dir_path = argv[1];
-    int max_backups = atoi(argv[2]);
+    max_backups = atoi(argv[2]);
     int max_threads = atoi(argv[3]);
 
     if (access(dir_path, F_OK) == -1) {
         fprintf(stderr, "ERROR: file path '%s' does not exist\n", dir_path);
-        return 1;
-    }
-
-    if (max_backups <= 0) {
-        fprintf(stderr, "ERROR: maximum concurrent backups must be a positive number\n");
-        return 1;
-    }
-
-    if (sem_init(&semaphore, 0, (unsigned int)max_threads) != 0) {
-        fprintf(stderr, "ERROR: Failed to initialize semaphore\n");
         return 1;
     }
 
@@ -219,24 +216,21 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    DIR *dir = opendir(dir_path);
+    dir = opendir(dir_path);
     if (!dir) {
         fprintf(stderr, "ERROR: Unable to open directory '%s'\n", dir_path);
-        sem_destroy(&semaphore);
         return 1;
     }
 
-    struct dirent *entry;
-    pthread_t *threads = (pthread_t*)malloc((size_t)max_threads * sizeof(pthread_t));
+    threads = (pthread_t*)malloc((size_t)max_threads * sizeof(pthread_t));
     if (threads == NULL) {
         fprintf(stderr, "ERROR: Failed to allocate memory for threads\n");
-        sem_destroy(&semaphore);
         closedir(dir);
         return 1;
     }
 
     int thread_count = 0;
-
+    struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
@@ -247,58 +241,38 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        sem_wait(&semaphore);
+        pthread_mutex_lock(&thread_mutex);
+        while (active_threads >= max_threads) {
+            // wait for the condition signal, meaning a thread has finished
+            pthread_cond_wait(&thread_cond, &thread_mutex);
 
-        // allocate memory for the thread arguments
-        char **args = malloc(3 * sizeof(char *));
-        if (args == NULL) {
-            fprintf(stderr, "ERROR: Failed to allocate memory for thread arguments\n");
-            sem_post(&semaphore);
-            continue;
-        }
-
-        args[0] = strdup(dir_path);
-        args[1] = strdup(entry->d_name);
-        args[2] = strdup(argv[2]);
-
-        if (!args[0] || !args[1] || !args[2]) {
-            fprintf(stderr, "ERROR: Failed to duplicate string for thread arguments\n");
-            free(args[0]);
-            free(args[1]);
-            free(args[2]);
-            free(args);
-            sem_post(&semaphore);
-            continue;
-        }
-
-        printf("Processing job: %s\n", entry->d_name);
-
-        pthread_create(&threads[thread_count], NULL, process_job_file, (void*)args);
-        thread_count++;
-        int finished = 0;
-        while(1) {
             for (int i = 0; i < thread_count; i++) {
                 int result = pthread_tryjoin_np(threads[i], NULL);
-                if (result == 0) {
+
+                if (result == 0) { // successful join
                     for (int j = i; j < thread_count - 1; j++) {
                         threads[j] = threads[j + 1];
                     }
                     thread_count--;
                     i--;
-                    finished = 1;
-                    break;
                 }
             }
-            // if no thread was joined, wait 1sec before trying again
-            if (thread_count == max_threads) {
-                sleep(1);
-            }
-
-            if (finished) {
-                finished = 0;
-                break;
-            }
         }
+        pthread_mutex_unlock(&thread_mutex);
+
+        job_t *job = malloc(sizeof(job_t));
+        job->dir_path = strdup(dir_path);
+        job->job_file = strdup(entry->d_name);
+
+        printf("Processing job: %s\n", entry->d_name);
+
+        pthread_create(&threads[thread_count], NULL, process_job_file, (void*)job);
+
+        pthread_mutex_lock(&thread_mutex);
+        active_threads++;
+        pthread_mutex_unlock(&thread_mutex);
+
+        thread_count++;
     }
 
     for (int i = 0; i < thread_count; i++) {
@@ -306,8 +280,6 @@ int main(int argc, char *argv[]) {
     }
 
     free(threads);
-
-    sem_destroy(&semaphore);
     closedir(dir);
     kvs_terminate();
     return 0;
