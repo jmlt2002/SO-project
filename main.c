@@ -231,59 +231,53 @@ int main(int argc, char *argv[]) {
     int thread_count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+        continue;
+    }
 
-        char *ext = strrchr(entry->d_name, '.');
-        if (ext == NULL || strcmp(ext, ".job") != 0) {
-            continue;
-        }
+    char *ext = strrchr(entry->d_name, '.');
+    if (ext == NULL || strcmp(ext, ".job") != 0) {
+        continue;
+    }
 
-        pthread_mutex_lock(&thread_mutex);
-        while (thread_count >= max_threads) {
-            // wait for a thread to finish
-            pthread_cond_wait(&thread_cond, &thread_mutex);
+    pthread_mutex_lock(&thread_mutex);
+    while (thread_count >= max_threads) {
+        // wait for a thread to finish
+        pthread_cond_wait(&thread_cond, &thread_mutex);
 
-            for (int i = 0; i < thread_count; i++) {
-                if (threads[i].is_finished) {
-                    pthread_join(threads[i].thread, NULL);
-                    thread_count--;
-                }
-            }
-        }
-
-        // find an empty thread slot
-        int thread_index = -1;
-        for (int i = 0; i < max_threads; i++) {
+        for (int i = 0; i < thread_count; i++) {
             if (threads[i].is_finished) {
-                thread_index = i;
-                break;
+                pthread_join(threads[i].thread, NULL);
+                
+                for (int j = i; j < thread_count - 1; j++) {
+                    threads[j] = threads[j + 1];
+                }
+
+                thread_count--;
+                i--;
             }
         }
-
-        Job *job = malloc(sizeof(Job));
-        job->dir_path = strdup(dir_path);
-        job->job_file = strdup(entry->d_name);
-        job->thread_index = thread_index;
-
-        printf("Processing job: %s\n", entry->d_name);
-
-        // create a new thread to process a job
-        pthread_create(&threads[thread_count].thread, NULL, process_job_file, (void*)job);
-        threads[thread_count].is_finished = 0;
-        thread_count++;
-        pthread_mutex_unlock(&thread_mutex);
     }
 
-    // wait for all threads to finish
+    // Allocate a new job
+    Job *job = malloc(sizeof(Job));
+    job->dir_path = strdup(dir_path);
+    job->job_file = strdup(entry->d_name);
+    job->thread_index = thread_count;
+
+    printf("Processing job: %s\n", entry->d_name);
+
+    // Create a new thread to process a job
+    pthread_create(&threads[thread_count].thread, NULL, process_job_file, (void*)job);
+    threads[thread_count].is_finished = 0;
+    thread_count++;
+    pthread_mutex_unlock(&thread_mutex);
+}
+
+    // join all threads
     for (int i = 0; i < thread_count; i++) {
-        if(threads[i].is_finished == 1) {
-            pthread_join(threads[i].thread, NULL);
-        }
+        pthread_join(threads[i].thread, NULL);
     }
-
-    printf("All jobs have been processed\n");
 
     free(threads);
     closedir(dir);
