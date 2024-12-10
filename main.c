@@ -12,7 +12,9 @@
 #include "constants.h"
 #include "parser.h"
 #include "operations.h"
+#include "threader.h"
 
+#define NEW(X) malloc(sizeof(X))
 int MAX_THREADS;
 static int MAX_CONCURRENT_BACKUPS;
 static int RUNNING_BACKUPS = 0;
@@ -140,15 +142,78 @@ void *process_file(int in_fd, int out_fd, char *file_path_no_ext) {
     }
 }
 
-int main(int argc, char *argv[]) {
+int execute_job_file(char *d_name, char *dir_path) {
+    // format input file_path
+    char file_path[MAX_PATH_SIZE];
+    char file_path_no_ext[MAX_PATH_SIZE];
+    strcpy(file_path, dir_path);
+    if (dir_path[strlen(dir_path) - 1] != '/') {
+        strcat(file_path, "/");
+    }
+    strcat(file_path, d_name);
 
-    if (argc != 3) {
-        fprintf(stderr, "USAGE: ./kvs <path_to_jobs> <backup_number>\n");
+    // format output_path
+    char output_path[MAX_PATH_SIZE];
+    strcpy(output_path, file_path);
+    char *dot_pos = strrchr(output_path, '.');
+    if (dot_pos != NULL) {
+        *dot_pos = '\0';
+    }
+    strcpy(file_path_no_ext, output_path);
+    strcat(output_path, ".out");
+
+    // open for reading input file
+    int in_fd = open(file_path, O_RDONLY);
+    if (in_fd == -1) {
+        fprintf(stderr, "ERROR: Unable to open file '%s'\n", file_path);
+        return -1;
+    }
+
+    // output file
+    int out_fd = open(output_path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
+    if (out_fd == -1) {
+        fprintf(stderr, "ERROR: Unable to open output file '%s' for writing\n", output_path);
+        close(in_fd);
+        return -1;
+    }
+
+    process_file(in_fd, out_fd, file_path_no_ext);
+
+    close(in_fd);
+    close(out_fd);
+    return 0;
+}
+
+struct twExecuteJobFileArgs {
+    char *d_name;
+    char *dir_path;
+};
+
+void *thread_wrapper_execute_job_file(void *arg) {
+    struct twExecuteJobFileArgs *exec_job_args = (struct twExecuteJobFileArgs *) arg;
+    execute_job_file(exec_job_args->d_name, exec_job_args->dir_path);
+    free(exec_job_args->d_name);
+    free(exec_job_args);
+    return NULL;
+}
+
+int main(int argc, char *argv[]) {
+    ThreadPool thread_pool;
+    char *dir_path;
+    DIR *dir;
+    struct dirent *entry;
+    struct twExecuteJobFileArgs *exec_job_args;
+    Job *job;
+
+    if (argc != 4) {
+        fprintf(stderr, "USAGE: ./kvs <path_to_jobs> <backup_number> <max_threads>\n");
         return 1;
     }
 
-    char *dir_path = argv[1];
+    dir_path = argv[1];
     MAX_CONCURRENT_BACKUPS = atoi(argv[2]);
+    MAX_THREADS = atoi(argv[3]);
+    thread_pool_init(&thread_pool, MAX_THREADS-1);
 
     if (access(dir_path, F_OK) == -1) {
         fprintf(stderr, "ERROR: file path '%s' does not exist\n", dir_path);
@@ -165,14 +230,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    DIR *dir = opendir(dir_path);
+    dir = opendir(dir_path);
     if (!dir) {
         fprintf(stderr, "ERROR: Unable to open directory '%s'\n", dir_path);
         kvs_terminate();
         return 1;
     }
 
-    struct dirent *entry;
+
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
@@ -182,51 +247,26 @@ int main(int argc, char *argv[]) {
         if (ext == NULL || strcmp(ext, ".job") != 0) {
             continue;
         }
-
-        // format input file_path
-        char file_path[MAX_PATH_SIZE];
-        char file_path_no_ext[MAX_PATH_SIZE];
-        strcpy(file_path, dir_path);
-        if (dir_path[strlen(dir_path) - 1] != '/') {
-            strcat(file_path, "/");
-        }
-        strcat(file_path, entry->d_name);
-
-        // format output_path
-        char output_path[MAX_PATH_SIZE];
-        strcpy(output_path, file_path);
-        char *dot_pos = strrchr(output_path, '.');
-        if (dot_pos != NULL) {
-            *dot_pos = '\0';
-        }
-        strcpy(file_path_no_ext, output_path);
-        strcat(output_path, ".out");
-
-        // open for reading input file
-        int in_fd = open(file_path, O_RDONLY);
-        if (in_fd == -1) {
-            fprintf(stderr, "ERROR: Unable to open file '%s'\n", file_path);
-            continue;
-        }
-
-        // output file
-        int out_fd = open(output_path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
-        if (out_fd == -1) {
-            fprintf(stderr, "ERROR: Unable to open output file '%s' for writing\n", output_path);
-            close(in_fd);
-            continue;
-        }
-
-        process_file(in_fd, out_fd, file_path_no_ext);
-
-        close(in_fd);
-        close(out_fd);
+        exec_job_args = NEW(struct twExecuteJobFileArgs);
+        exec_job_args->d_name = strdup(entry->d_name);
+        exec_job_args->dir_path = dir_path;
+        job = job_create(thread_wrapper_execute_job_file, (void *) exec_job_args);
+        thread_pool_add_job(&thread_pool, job);
     }
-    kvs_terminate();
     closedir(dir);
 
     // wait for child processes to finish
     while (wait(NULL) > 0);
+
+
+    // TODO: make the main thread also work
+    thread_pool_wait_all_done(&thread_pool);
+
+    thread_pool_kill(&thread_pool);
+    thread_pool_destroy(&thread_pool);
+
+    kvs_terminate();
+
 
     return 0;
 }

@@ -4,7 +4,7 @@
 
 #include "threader.h"
 #include <malloc.h>
-
+#include <string.h>
 #define NEW(X) malloc(sizeof(X))
 #define NEW_Z(N,X) calloc(N, sizeof(X))
 
@@ -17,30 +17,41 @@ void ms_sleep(unsigned int delay_ms) {
     nanosleep(&delay, NULL);
 }
 
+Job * job_create(void * (*func) (void*), void *args) {
+    Job *job = NEW_Z(1, Job);
+    job->func = func;
+    job->args = args;
+    pthread_mutex_init(&job->mtx, NULL);
+    return job;
+}
 
 void job_delete(Job *job) {
     free(job);
 }
 
 void job_queue_item_delete(JobQueueItem * jqi) {
-    job_delete(jqi->job);
     free(jqi);
 }
 
 Job * job_queue_try_grab_job(JobQueue *jq) {
     Job * job = NULL;
-    JobQueueItem *prev_jqi;
+    JobQueueItem *next_jqi;
     if (! pthread_mutex_trylock(& jq->mtx)) {
-        if (! jq->head) {
+        if (! jq->tail) {
             pthread_mutex_unlock(&jq->mtx);
             return NULL;
         }
-        job = jq->head->prev->job;
-        prev_jqi = jq->head->prev;
-        job_queue_item_delete(jq->head);
-        jq->head = prev_jqi;
-        if (! jq->head) jq->empty = 1;
+
+        next_jqi = jq->tail->next;
+        job = jq->tail->job;
+        job_queue_item_delete(jq->tail);
+        jq->tail = next_jqi;
+
+        if (! jq->tail) {
+            jq->empty = 1;
+        }
         pthread_mutex_unlock(&jq->mtx);
+        // printf("DEBUG: job removed (Empty: %d)\n", jq->empty);
         return job;
     }
     return NULL;
@@ -48,14 +59,22 @@ Job * job_queue_try_grab_job(JobQueue *jq) {
 
 void job_queue_init(JobQueue *jq) {
     pthread_mutex_init(&jq->mtx, NULL);
-    jq->head = NULL;
+    jq->tail = NULL;
     jq->empty = 1;
+}
+
+int job_queue_count(JobQueue *jq) {
+    int n = 0;
+    JobQueueItem *jqi;
+    for (jqi = jq->tail; jqi; jqi = jqi->next)
+        n += 1;
+    return n;
 }
 
 bool worker_grab_job(Worker* worker) {
     Job * job;
+
     if ( (! worker->thread_pool->jobs.empty) && (job = job_queue_try_grab_job(&worker->thread_pool->jobs)) ) {
-        job_delete(worker->current_job);
         worker->current_job = job;
         return 1;
     }
@@ -72,6 +91,8 @@ void *worker_loop(void *arg) {
             } else ms_sleep(1);
         }
         cur_worker->current_job->func(cur_worker->current_job->args);
+        job_delete(cur_worker->current_job);
+        cur_worker->current_job = NULL;
     }
 
     return NULL;
@@ -80,17 +101,29 @@ void *worker_loop(void *arg) {
 void thread_pool_add_job(ThreadPool *tp, Job *job) {
     JobQueueItem * jqi = NEW(JobQueueItem);
     jqi->job = job;
+    jqi->next = NULL;
     pthread_mutex_lock(&tp->jobs.mtx);
-    jqi->prev = tp->jobs.head;
-    tp->jobs.head = jqi;
+
+    if (!tp->jobs.empty) {
+        tp->jobs.head->next = jqi;
+        tp->jobs.head = jqi;
+    }
+    else {
+        tp->jobs.tail = jqi;
+        tp->jobs.head = jqi;
+    }
+
     tp->jobs.empty = 0;
     pthread_mutex_unlock(&tp->jobs.mtx);
+    // printf("DEBUG: job added (total: %d) \n", job_queue_count(&tp->jobs));
 }
 
 void thread_pool_init(ThreadPool *tp, int max_workers) {
     tp->max_workers = max_workers;
-    tp->workers = NEW_Z(max_workers, Worker);  // alloc max_workers Worker(s), data set to [Z]ero
-    tp = NEW(ThreadPool);
+    tp->workers = NEW_Z((size_t) max_workers, Worker);  // alloc max_workers Worker(s), data set to [Z]ero
+    /*tp->workers = malloc((size_t) (sizeof(Worker) * (size_t)max_workers));
+    memset((void *) tp->workers, (int) 0, (unsigned long) (sizeof(Worker) * (size_t)max_workers));*/
+
     job_queue_init(&tp->jobs);
 
     for (int i=0;i<max_workers;i++) {
@@ -99,6 +132,12 @@ void thread_pool_init(ThreadPool *tp, int max_workers) {
         pthread_create(&tp->workers[i].thread, NULL, worker_loop, (void *) &tp->workers[i]);
     }
 
+}
+
+void thread_pool_wait_all_done(ThreadPool *tp) {
+    while (!tp->jobs.empty) ms_sleep(1);
+    for (int i=0; i<tp->max_workers; i++)
+        while (tp->workers[i].current_job) ms_sleep(1);
 }
 
 void thread_pool_kill(ThreadPool *tp) {
