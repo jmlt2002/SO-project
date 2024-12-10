@@ -31,6 +31,7 @@ void job_delete(Job *job) {
 
 void job_queue_item_delete(JobQueueItem * jqi) {
     free(jqi);
+    printf("DEBUG: jqi freed\n");
 }
 
 Job * job_queue_try_grab_job(JobQueue *jq) {

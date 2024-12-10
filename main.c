@@ -16,6 +16,7 @@
 
 #define NEW(X) malloc(sizeof(X))
 int MAX_THREADS;
+#define SINGLE_THREADED (MAX_THREADS == 1)
 static int MAX_CONCURRENT_BACKUPS;
 static int RUNNING_BACKUPS = 0;
 static pthread_mutex_t MTX_RUNNING_BACKUPS = PTHREAD_MUTEX_INITIALIZER;
@@ -213,7 +214,8 @@ int main(int argc, char *argv[]) {
     dir_path = argv[1];
     MAX_CONCURRENT_BACKUPS = atoi(argv[2]);
     MAX_THREADS = atoi(argv[3]);
-    thread_pool_init(&thread_pool, MAX_THREADS-1);
+
+    if (!SINGLE_THREADED) thread_pool_init(&thread_pool, MAX_THREADS-1);
 
     if (access(dir_path, F_OK) == -1) {
         fprintf(stderr, "ERROR: file path '%s' does not exist\n", dir_path);
@@ -247,11 +249,17 @@ int main(int argc, char *argv[]) {
         if (ext == NULL || strcmp(ext, ".job") != 0) {
             continue;
         }
-        exec_job_args = NEW(struct twExecuteJobFileArgs);
-        exec_job_args->d_name = strdup(entry->d_name);
-        exec_job_args->dir_path = dir_path;
-        job = job_create(thread_wrapper_execute_job_file, (void *) exec_job_args);
-        thread_pool_add_job(&thread_pool, job);
+
+        if (SINGLE_THREADED) {
+            execute_job_file(entry->d_name, dir_path);
+        } else {
+            exec_job_args = NEW(struct twExecuteJobFileArgs);
+            exec_job_args->d_name = strdup(entry->d_name);
+            exec_job_args->dir_path = dir_path;
+            job = job_create(thread_wrapper_execute_job_file, (void *) exec_job_args);
+            thread_pool_add_job(&thread_pool, job);
+        }
+
     }
     closedir(dir);
 
@@ -260,10 +268,19 @@ int main(int argc, char *argv[]) {
 
 
     // TODO: make the main thread also work
-    thread_pool_wait_all_done(&thread_pool);
 
-    thread_pool_kill(&thread_pool);
-    thread_pool_destroy(&thread_pool);
+    if (!SINGLE_THREADED) {
+        while (!thread_pool.jobs.empty) {
+            Job * j = job_queue_try_grab_job(&thread_pool.jobs);
+            if (j) {
+                j->func(j->args);
+                job_delete(j);
+            }
+        }
+        thread_pool_wait_all_done(&thread_pool);
+        thread_pool_kill(&thread_pool);
+        thread_pool_destroy(&thread_pool);
+    }
 
     kvs_terminate();
 

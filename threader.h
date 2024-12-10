@@ -42,9 +42,10 @@ typedef struct threadPool {
 } ThreadPool;
 
 Job * job_create(void *func (void*), void *args);
+void job_delete(Job *job);
 
 int job_queue_count(JobQueue *jq);
-
+Job * job_queue_try_grab_job(JobQueue *jq);
 void thread_pool_init(ThreadPool *tp, int max_workers);
 void thread_pool_add_job(ThreadPool *tp, Job *job);
 void thread_pool_wait_all_done(ThreadPool *tp);
