@@ -7,13 +7,13 @@
 #include <string.h>
 #define NEW(X) malloc(sizeof(X))
 #define NEW_Z(N,X) calloc(N, sizeof(X))
-
+/*
 static struct timespec delay_to_timespec(unsigned int delay_ms) {
     return (struct timespec){delay_ms / 1000, (delay_ms % 1000) * 1000000};
 }
-
-void ms_sleep(unsigned int delay_ms) {
-    struct timespec delay = delay_to_timespec(delay_ms);
+*/
+void i_sleep() {
+    struct timespec delay = (struct timespec){0, 1};
     nanosleep(&delay, NULL);
 }
 
@@ -31,7 +31,7 @@ void job_delete(Job *job) {
 
 void job_queue_item_delete(JobQueueItem * jqi) {
     free(jqi);
-    printf("DEBUG: jqi freed\n");
+    // printf("DEBUG: jqi freed\n");
 }
 
 Job * job_queue_try_grab_job(JobQueue *jq) {
@@ -89,7 +89,7 @@ void *worker_loop(void *arg) {
         while (! worker_grab_job(cur_worker) ) {
             if (cur_worker->kill) {
                 return NULL;
-            } else ms_sleep(1);
+            } else i_sleep(1);
         }
         cur_worker->current_job->func(cur_worker->current_job->args);
         job_delete(cur_worker->current_job);
@@ -136,9 +136,9 @@ void thread_pool_init(ThreadPool *tp, int max_workers) {
 }
 
 void thread_pool_wait_all_done(ThreadPool *tp) {
-    while (!tp->jobs.empty) ms_sleep(1);
+    while (!tp->jobs.empty) i_sleep();
     for (int i=0; i<tp->max_workers; i++)
-        while (tp->workers[i].current_job) ms_sleep(1);
+        while (tp->workers[i].current_job) i_sleep();
 }
 
 void thread_pool_kill(ThreadPool *tp) {
