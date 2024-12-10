@@ -34,7 +34,7 @@ int kvs_init() {
         return 1;
     }
 
-    pthread_rwlock_init(&kvs_store.rwlock, NULL);  // Initialize the read-write lock
+    pthread_rwlock_init(&kvs_store.rwlock, NULL);
     return 0;
 }
 
@@ -44,7 +44,7 @@ int kvs_terminate() {
         return 1;
     }
 
-    pthread_rwlock_destroy(&kvs_store.rwlock);  // Destroy the read-write lock
+    pthread_rwlock_destroy(&kvs_store.rwlock);
     free_table(kvs_store.table);
     kvs_store.table = NULL;
     return 0;
