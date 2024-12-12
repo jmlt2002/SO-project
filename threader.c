@@ -12,7 +12,7 @@ static struct timespec delay_to_timespec(unsigned int delay_ms) {
     return (struct timespec){delay_ms / 1000, (delay_ms % 1000) * 1000000};
 }
 */
-void i_sleep() {
+static void i_sleep() {
     struct timespec delay = (struct timespec){0, 1};
     nanosleep(&delay, NULL);
 }
@@ -89,7 +89,7 @@ void *worker_loop(void *arg) {
         while (! worker_grab_job(cur_worker) ) {
             if (cur_worker->kill) {
                 return NULL;
-            } else i_sleep(1);
+            } else i_sleep();
         }
         cur_worker->current_job->func(cur_worker->current_job->args);
         job_delete(cur_worker->current_job);
