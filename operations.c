@@ -49,7 +49,7 @@ int kvs_write(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_
     return 1;
   }
   KeyNode **locked_keys = (KeyNode **) calloc(1, sizeof(KeyNode) * num_pairs);
-  while (try_lock_keys(kvs_table, num_pairs, keys, locked_keys)) i_sleep();
+  while (try_lock_keys(kvs_table, num_pairs, keys, locked_keys, 0)) i_sleep();
   for (size_t i = 0; i < num_pairs; i++) {
     if (write_pair(kvs_table, keys[i], values[i]) != 0) {
       fprintf(stderr, "Failed to write keypair (%s,%s)\n", keys[i], values[i]);
@@ -67,6 +67,8 @@ int kvs_read(size_t num_pairs, char keys[][MAX_STRING_SIZE], int out_fd) {
     fprintf(stderr, "KVS state must be initialized\n");
     return 1;
   }
+  KeyNode **locked_keys = (KeyNode **) calloc(1, sizeof(KeyNode) * num_pairs);
+  try_lock_keys(kvs_table, num_pairs, keys, locked_keys, 1);
   qsort(keys, num_pairs, MAX_STRING_SIZE, compare_kvs_key_string);
   write(out_fd, "[", 1);
   for (size_t i = 0; i < num_pairs; i++) {
@@ -87,6 +89,7 @@ int kvs_read(size_t num_pairs, char keys[][MAX_STRING_SIZE], int out_fd) {
     free(result);
   }
   write(out_fd, "]\n", 2);
+  unlock_keys(num_pairs, locked_keys);
   return 0;
 }
 
@@ -96,7 +99,8 @@ int kvs_delete(size_t num_pairs, char keys[][MAX_STRING_SIZE], int out_fd) {
     return 1;
   }
   int aux = 0;
-
+  KeyNode **locked_keys = (KeyNode **) calloc(1, sizeof(KeyNode) * num_pairs);
+  try_lock_keys(kvs_table, num_pairs, keys, locked_keys, 0);
   for (size_t i = 0; i < num_pairs; i++) {
     if (delete_pair(kvs_table, keys[i]) != 0) {
       if (!aux) {
@@ -112,6 +116,7 @@ int kvs_delete(size_t num_pairs, char keys[][MAX_STRING_SIZE], int out_fd) {
   if (aux) {
     write(out_fd, "]\n", 2);
   }
+  unlock_keys(num_pairs, locked_keys);
 
   return 0;
 }
