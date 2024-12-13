@@ -23,7 +23,6 @@ Job * job_create(void * (*func) (void*), void *args) {
     // insert job data
     job->func = func;
     job->args = args;
-    pthread_mutex_init(&job->mtx, NULL);
     return job;
 }
 

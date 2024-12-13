@@ -12,47 +12,46 @@
  * Represents a job to be executed by a worker.
  */
 typedef struct job {
-    void * (*func) (void*); ///< Function pointer to the job's task.
-    void *args; ///< Arguments for the job's task.
-    pthread_mutex_t mtx; ///< Mutex for job synchronization.
+    void * (*func) (void*);
+    void *args;
 } Job;
 
 /**
  * Represents an item in the job queue.
  */
 typedef struct jobQueueItem {
-    Job *job; ///< Pointer to the job.
-    struct jobQueueItem *next; ///< Pointer to the next item in the queue.
+    Job *job;
+    struct jobQueueItem *next;
 } JobQueueItem;
 
 /**
  * Represents a job queue.
  */
 typedef struct jobQueue {
-    JobQueueItem *tail; ///< Pointer to the tail of the queue.
-    JobQueueItem *head; ///< Pointer to the head of the queue.
-    pthread_mutex_t mtx; ///< Mutex for queue synchronization.
-    bool empty; ///< Boolean indicating whether the queue is empty.
+    JobQueueItem *tail;
+    JobQueueItem *head;
+    pthread_mutex_t mtx;
+    bool empty;
 } JobQueue;
 
 /**
  * Represents a worker in the thread pool.
  */
 typedef struct worker {
-    bool kill; ///< Flag to indicate if the worker should terminate.
-    Job *current_job; ///< The current job being executed by the worker.
-    struct threadPool *thread_pool; ///< Pointer to the thread pool the worker belongs to.
-    pthread_t thread; ///< The thread managed by this worker.
-    pthread_mutex_t mtx; ///< Mutex for worker synchronization.
+    bool kill;
+    Job *current_job;
+    struct threadPool *thread_pool;
+    pthread_t thread;
+    pthread_mutex_t mtx;
 } Worker;
 
 /**
  * Represents a thread pool.
  */
 typedef struct threadPool {
-    int max_workers; ///< Maximum number of workers in the pool.
-    Worker *workers; ///< Array of workers in the pool.
-    JobQueue jobs; ///< Job queue for the pool.
+    int max_workers;
+    Worker *workers;
+    JobQueue jobs;
 } ThreadPool;
 
 /**
