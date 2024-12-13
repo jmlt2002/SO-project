@@ -17,8 +17,10 @@ static void i_sleep() {
     nanosleep(&delay, NULL);
 }
 
+
 Job * job_create(void * (*func) (void*), void *args) {
     Job *job = NEW_Z(1, Job);
+    // insert job data
     job->func = func;
     job->args = args;
     pthread_mutex_init(&job->mtx, NULL);
@@ -38,17 +40,19 @@ Job * job_queue_try_grab_job(JobQueue *jq) {
     Job * job = NULL;
     JobQueueItem *next_jqi;
     if (! pthread_mutex_trylock(& jq->mtx)) {
-        if (! jq->tail) {
+
+        if (! jq->tail) {  // if the queue is empty
             pthread_mutex_unlock(&jq->mtx);
             return NULL;
         }
 
+        // remove the first job to be processed from the queue
         next_jqi = jq->tail->next;
         job = jq->tail->job;
         job_queue_item_delete(jq->tail);
         jq->tail = next_jqi;
 
-        if (! jq->tail) {
+        if (! jq->tail) { // if it was the last job
             jq->empty = 1;
         }
         pthread_mutex_unlock(&jq->mtx);
@@ -85,6 +89,7 @@ bool worker_grab_job(Worker* worker) {
 void *worker_loop(void *arg) {
     Worker *cur_worker = (Worker *) arg;
 
+    // ThreadPool Worker loop
     while (! cur_worker->kill) {
         while (! worker_grab_job(cur_worker) ) {
             if (cur_worker->kill) {
@@ -99,7 +104,9 @@ void *worker_loop(void *arg) {
     return NULL;
 }
 
+
 void thread_pool_add_job(ThreadPool *tp, Job *job) {
+
     JobQueueItem * jqi = NEW(JobQueueItem);
     jqi->job = job;
     jqi->next = NULL;
@@ -110,6 +117,7 @@ void thread_pool_add_job(ThreadPool *tp, Job *job) {
         tp->jobs.head = jqi;
     }
     else {
+
         tp->jobs.tail = jqi;
         tp->jobs.head = jqi;
     }

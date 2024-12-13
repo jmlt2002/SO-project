@@ -23,6 +23,8 @@ typedef struct HashTable {
 struct HashTable *create_hash_table();
 
 int try_lock_keys(HashTable *ht, size_t num_keys, char keys[][MAX_STRING_SIZE], KeyNode **dest_locked_nodes, int read);
+int read_lock_table(HashTable *ht);
+int read_unlock_table(HashTable *ht);
 void unlock_keys(size_t num_keys, KeyNode **locked_nodes);
 int compare_kvs_key_string(const void *p1, const void *p2);
 /// Appends a new key value pair to the hash table.

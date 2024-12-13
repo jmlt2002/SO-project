@@ -46,6 +46,7 @@ int try_lock_keys(HashTable *ht, size_t num_keys, char keys[][MAX_STRING_SIZE], 
     int i;
     char *keys_dup = (char *) malloc(sizeof(char) * MAX_STRING_SIZE * num_keys);
     memcpy(keys_dup, keys, sizeof(char) * MAX_STRING_SIZE * num_keys);
+    // TODO: Mover a copia das chaves para fora do try_lock_keys -> é usado a cada i_sleep() [nanosegundo]
 
     qsort(keys_dup, num_keys, MAX_STRING_SIZE, compare_kvs_key_string); // force sort keys in order to lock
 
@@ -74,6 +75,28 @@ int try_lock_keys(HashTable *ht, size_t num_keys, char keys[][MAX_STRING_SIZE], 
         return -1;
     }
     free(keys_dup);
+    return 0;
+}
+
+int read_lock_table(HashTable *ht) {
+    for (int i = 0; i < TABLE_SIZE; i++) {
+        KeyNode *keyNode = ht->table[i];
+        while (keyNode != NULL) {
+            pthread_rwlock_rdlock(&keyNode->rw_mtx);
+            keyNode = keyNode->next;
+        }
+    }
+    return 0;
+}
+
+int read_unlock_table(HashTable *ht) {
+    for (int i = 0; i < TABLE_SIZE; i++) {
+        KeyNode *keyNode = ht->table[i];
+        while (keyNode != NULL) {
+            pthread_rwlock_unlock(&keyNode->rw_mtx);
+            keyNode = keyNode->next;
+        }
+    }
     return 0;
 }
 

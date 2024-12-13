@@ -122,19 +122,23 @@ int kvs_delete(size_t num_pairs, char keys[][MAX_STRING_SIZE], int out_fd) {
   return 0;
 }
 
+void prepare_backup() {
+    read_lock_table(kvs_table);
+}
+
 void kvs_show(int out_fd) {
-  for (int i = 0; i < TABLE_SIZE; i++) {
-    KeyNode *keyNode = kvs_table->table[i];
-    while (keyNode != NULL) {
-      // printf("(%s, %s)\n", keyNode->key, keyNode->value);
-      write(out_fd, "(", 1);
-      write(out_fd, keyNode->key, strlen(keyNode->key));
-      write(out_fd, ", ", 2);
-      write(out_fd, keyNode->value, strlen(keyNode->value));
-      write(out_fd, ")\n", 2);
-      keyNode = keyNode->next; // Move to the next node
+    for (int i = 0; i < TABLE_SIZE; i++) {
+        KeyNode *keyNode = kvs_table->table[i];
+        while (keyNode != NULL) {
+            // printf("(%s, %s)\n", keyNode->key, keyNode->value);
+            write(out_fd, "(", 1);
+            write(out_fd, keyNode->key, strlen(keyNode->key));
+            write(out_fd, ", ", 2);
+            write(out_fd, keyNode->value, strlen(keyNode->value));
+            write(out_fd, ")\n", 2);
+            keyNode = keyNode->next; // Move to the next node
+        }
     }
-  }
 }
 
 int kvs_backup(char* backup_path) {
@@ -145,6 +149,7 @@ int kvs_backup(char* backup_path) {
         kvs_show(bck_fd);
         exit(0);
     }
+    read_unlock_table(kvs_table);
     fsync(bck_fd);  // alternativa a O_SYNC
     close(bck_fd);
     
