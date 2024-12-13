@@ -4,6 +4,8 @@
 
 #include <stdlib.h>
 #include <ctype.h>
+#include <string.h>
+#include <stdio.h>
 
 // Hash function based on key initial.
 // @param key Lowercase alphabetical string.
@@ -55,20 +57,33 @@ int try_lock_keys(HashTable *ht, size_t num_keys, char keys[][MAX_STRING_SIZE], 
         KeyNode *keyNode = ht->table[hash(keys[i])];
         // Search for the key node
         while (keyNode != NULL) {
-            if (strcmp(keyNode->key, &keys_dup[i*MAX_STRING_SIZE]) == 0) {
-                if ( (!read && !pthread_rwlock_trywrlock(&keyNode->rw_mtx)) || (read && !pthread_rwlock_rdlock(&keyNode->rw_mtx) )) {
+            if (strcmp(keyNode->key, &keys_dup[i * MAX_STRING_SIZE]) == 0) {
+                int lock_success = 0;
+
+                if (read) {
+                    lock_success = !pthread_rwlock_tryrdlock(&keyNode->rw_mtx);
+                } else {
+                    lock_success = !pthread_rwlock_trywrlock(&keyNode->rw_mtx);
+                }
+
+                if (lock_success) {
+                    printf("Locked %s\n", keyNode->key);
                     dest_locked_nodes[i] = keyNode;
+                    break; // Exit loop after locking the desired node
                 } else {
                     fail = 1;
-                    break;
+                    break; // Exit loop on lock failure
                 }
             }
+
             keyNode = keyNode->next; // Move to the next node
         }
+
     }
 
     if (fail) {
         for (i=0; i < (int)num_keys; i++) {
+            printf("try_lock_keys: %s\n", keys[i]);
             if (dest_locked_nodes[i]) pthread_rwlock_unlock(&dest_locked_nodes[i]->rw_mtx);
         }
         free(keys_dup);
@@ -93,6 +108,7 @@ int read_unlock_table(HashTable *ht) {
     for (int i = 0; i < TABLE_SIZE; i++) {
         KeyNode *keyNode = ht->table[i];
         while (keyNode != NULL) {
+            printf("read_unlock_table: %s\n", keyNode->key);
             pthread_rwlock_unlock(&keyNode->rw_mtx);
             keyNode = keyNode->next;
         }
@@ -101,8 +117,12 @@ int read_unlock_table(HashTable *ht) {
 }
 
 void unlock_keys(size_t num_keys, KeyNode **locked_nodes) {
-    for (int i=0; i < (int)num_keys; i++)
-        if (locked_nodes[i]) pthread_rwlock_unlock(&locked_nodes[i]->rw_mtx);
+    for (int i=0; i < (int)num_keys; i++) {
+        if (locked_nodes[i]) {
+            printf("unlock_keys: %s\n", locked_nodes[i]->key);
+            pthread_rwlock_unlock(&locked_nodes[i]->rw_mtx);
+        }
+    }
 }
 
 int write_pair(HashTable *ht, const char *key, const char *value) {
