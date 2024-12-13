@@ -122,11 +122,9 @@ int kvs_delete(size_t num_pairs, char keys[][MAX_STRING_SIZE], int out_fd) {
   return 0;
 }
 
-void prepare_backup() {
-    read_lock_table(kvs_table);
-}
 
-void kvs_show(int out_fd) {
+void kvs_show(int out_fd, int backup) {
+    if (!backup) read_lock_table(kvs_table);
     for (int i = 0; i < TABLE_SIZE; i++) {
         KeyNode *keyNode = kvs_table->table[i];
         while (keyNode != NULL) {
@@ -139,20 +137,22 @@ void kvs_show(int out_fd) {
             keyNode = keyNode->next; // Move to the next node
         }
     }
+    if (!backup) read_unlock_table(kvs_table);
 }
 
 int kvs_backup(char* backup_path) {
     int bck_fd = open(backup_path, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
+    read_lock_table(kvs_table);
     pid_t pid = fork();
     if (pid < 0) return pid;
     if (pid == 0) {
-        kvs_show(bck_fd);
+        kvs_show(bck_fd, 1);
         exit(0);
     }
-    read_unlock_table(kvs_table);
+
     fsync(bck_fd);  // alternativa a O_SYNC
     close(bck_fd);
-    
+    read_unlock_table(kvs_table);
     return 0;
 }
 

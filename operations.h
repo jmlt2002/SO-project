@@ -34,9 +34,8 @@ int kvs_delete(size_t num_pairs, char keys[][MAX_STRING_SIZE], int out_fd);
 
 /// Writes the state of the KVS.
 /// @param out_fd File descriptor to write the output.
-void kvs_show(int out_fd, int);
+void kvs_show(int out_fd, int backup);
 
-void prepare_backup();
 
 /// Creates a backup of the KVS state and stores it in the correspondent
 /// backup file

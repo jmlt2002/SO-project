@@ -77,6 +77,7 @@ void *process_file(int in_fd, int out_fd, char *file_path_no_ext) {
 
             case CMD_SHOW:
                 kvs_show(out_fd, 0);
+
                 break;
 
             case CMD_WAIT:
@@ -102,7 +103,7 @@ void *process_file(int in_fd, int out_fd, char *file_path_no_ext) {
                     pthread_mutex_unlock(&MTX_RUNNING_BACKUPS);
                 } else
                     pthread_mutex_unlock(&MTX_RUNNING_BACKUPS);
-                prepare_backup();
+
                 if (kvs_backup(backup_path)) {
                     fprintf(stderr, "Failed to perform backup.\n");
                 } else {
