@@ -46,9 +46,10 @@ static int find_key_node(size_t n, KeyNode **where, char *what) {
 int try_lock_keys(HashTable *ht, size_t num_keys, char keys[][MAX_STRING_SIZE], KeyNode **dest_locked_nodes, int read) {
     int fail = 0;
     int i;
+
     char *keys_dup = (char *) malloc(sizeof(char) * MAX_STRING_SIZE * num_keys);
     memcpy(keys_dup, keys, sizeof(char) * MAX_STRING_SIZE * num_keys);
-    // TODO: Mover a copia das chaves para fora do try_lock_keys -> é usado a cada i_sleep() [nanosegundo]
+    // TODO: Mover a copia das chaves para fora do try_lock_keys -> Ã© usado a cada i_sleep() [nanosegundo]
 
     qsort(keys_dup, num_keys, MAX_STRING_SIZE, compare_kvs_key_string); // force sort keys in order to lock
 
@@ -59,18 +60,20 @@ int try_lock_keys(HashTable *ht, size_t num_keys, char keys[][MAX_STRING_SIZE], 
         while (keyNode != NULL) {
             if (strcmp(keyNode->key, &keys_dup[i * MAX_STRING_SIZE]) == 0) {
                 int lock_success = 0;
-
+                int err = 0;
                 if (read) {
                     lock_success = !pthread_rwlock_tryrdlock(&keyNode->rw_mtx);
                 } else {
-                    lock_success = !pthread_rwlock_trywrlock(&keyNode->rw_mtx);
+                    err = pthread_rwlock_trywrlock(&keyNode->rw_mtx);
+                    lock_success = !err;
                 }
 
                 if (lock_success) {
-                    printf("Locked %s\n", keyNode->key);
+                    printf("[%lu] Locked %s\n", pthread_self(), keyNode->key);
                     dest_locked_nodes[i] = keyNode;
                     break; // Exit loop after locking the desired node
                 } else {
+                    printf("[%lu] Failed lock %s (ERR: %d)\n", pthread_self(), keyNode->key, err);
                     fail = 1;
                     break; // Exit loop on lock failure
                 }
@@ -82,8 +85,8 @@ int try_lock_keys(HashTable *ht, size_t num_keys, char keys[][MAX_STRING_SIZE], 
     }
 
     if (fail) {
-        for (i=0; i < (int)num_keys; i++) {
-            printf("try_lock_keys: %s\n", keys[i]);
+        for (int j=0; j < i; j++) {
+            printf("[%lu] Failed try_lock_keys: %s\n", pthread_self(), keys[i]);
             if (dest_locked_nodes[i]) pthread_rwlock_unlock(&dest_locked_nodes[i]->rw_mtx);
         }
         free(keys_dup);
@@ -108,7 +111,7 @@ int read_unlock_table(HashTable *ht) {
     for (int i = 0; i < TABLE_SIZE; i++) {
         KeyNode *keyNode = ht->table[i];
         while (keyNode != NULL) {
-            printf("read_unlock_table: %s\n", keyNode->key);
+            printf("[%lu] read_unlock_table: %s\n", pthread_self(), keyNode->key);
             pthread_rwlock_unlock(&keyNode->rw_mtx);
             keyNode = keyNode->next;
         }
@@ -119,7 +122,8 @@ int read_unlock_table(HashTable *ht) {
 void unlock_keys(size_t num_keys, KeyNode **locked_nodes) {
     for (int i=0; i < (int)num_keys; i++) {
         if (locked_nodes[i]) {
-            printf("unlock_keys: %s\n", locked_nodes[i]->key);
+
+            printf("[%lu] unlock_keys: %s\n", pthread_self(), locked_nodes[i]->key);
             pthread_rwlock_unlock(&locked_nodes[i]->rw_mtx);
         }
     }

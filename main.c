@@ -40,7 +40,7 @@ void *process_file(int in_fd, int out_fd, char *file_path_no_ext) {
 
         switch (get_next(in_fd)) {
             case CMD_WRITE:
-            printf("write\n");
+            printf("[%lu] write\n", pthread_self());
                 num_pairs = parse_write(in_fd, keys, values, MAX_WRITE_SIZE, MAX_STRING_SIZE);
                 if (num_pairs == 0) {
                     fprintf(stderr, "Invalid command. See HELP for usage\n");
@@ -53,7 +53,7 @@ void *process_file(int in_fd, int out_fd, char *file_path_no_ext) {
                 break;
 
             case CMD_READ:
-            printf ("read\n");
+            printf ("[%lu] read\n", pthread_self());
                 num_pairs = parse_read_delete(in_fd, keys, MAX_WRITE_SIZE, MAX_STRING_SIZE);
                 if (num_pairs == 0) {
                     fprintf(stderr, "Invalid command. See HELP for usage\n");
@@ -66,7 +66,7 @@ void *process_file(int in_fd, int out_fd, char *file_path_no_ext) {
                 break;
 
             case CMD_DELETE:
-            printf("delete\n");
+            printf("[%lu] delete\n", pthread_self());
                 num_pairs = parse_read_delete(in_fd, keys, MAX_WRITE_SIZE, MAX_STRING_SIZE);
                 if (num_pairs == 0) {
                     fprintf(stderr, "Invalid command. See HELP for usage\n");
@@ -79,7 +79,7 @@ void *process_file(int in_fd, int out_fd, char *file_path_no_ext) {
                 break;
 
             case CMD_SHOW:
-            printf("show\n");
+            printf("[%lu] show\n", pthread_self());
                 kvs_show(out_fd, 0);
 
                 break;
@@ -98,7 +98,7 @@ void *process_file(int in_fd, int out_fd, char *file_path_no_ext) {
                 break;
 
             case CMD_BACKUP:
-            printf("backup\n");
+            printf("[%lu] backup\n", pthread_self());
                 format_backup_path(backup_path, file_path_no_ext, backup_count + 1);
                 pthread_mutex_lock(&MTX_RUNNING_BACKUPS);
                 if (RUNNING_BACKUPS >= MAX_CONCURRENT_BACKUPS) {

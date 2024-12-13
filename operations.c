@@ -48,8 +48,14 @@ int kvs_write(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_
     fprintf(stderr, "KVS state must be initialized\n");
     return 1;
   }
+  int tries = 0;
   KeyNode **locked_keys = (KeyNode **) calloc(1, sizeof(KeyNode) * num_pairs);
-  while (try_lock_keys(kvs_table, num_pairs, keys, locked_keys, 0)) i_sleep();
+  while (tries < 10 && try_lock_keys(kvs_table, num_pairs, keys, locked_keys, 0)) {
+      i_sleep();
+      tries += 1;
+  }
+  if (tries)
+      exit(-10);
   for (size_t i = 0; i < num_pairs; i++) {
     if (write_pair(kvs_table, keys[i], values[i]) != 0) {
       fprintf(stderr, "Failed to write keypair (%s,%s)\n", keys[i], values[i]);
