@@ -141,7 +141,7 @@ int delete_pair(HashTable *ht, const char *key) {
                 // Node to delete is not the first; bypass it
                 prevNode->next = keyNode->next; // Link the previous node to the next node
             }
-
+            pthread_rwlock_unlock(&keyNode->rw_mtx);
             // Free the memory allocated for the key and value
             free(keyNode->key);
             free(keyNode->value);
