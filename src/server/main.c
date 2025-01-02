@@ -5,20 +5,32 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <stdio.h>
+#include <errno.h>
 
 #include "constants.h"
 #include "parser.h"
 #include "operations.h"
 #include "io.h"
 #include "pthread.h"
+#include "subscriptions.h"
+#include "src/common/protocol.h"
+#include "src/common/constants.h"
 
 struct SharedData {
   DIR* dir;
   char* dir_name;
   pthread_mutex_t directory_mutex;
 };
+
+typedef struct {
+    char op_code;
+    char request_pipe[MAX_PIPE_PATH_LENGTH + 1];
+    char response_pipe[MAX_PIPE_PATH_LENGTH + 1];
+    char notification_pipe[MAX_PIPE_PATH_LENGTH + 1];
+} Message;
 
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t n_current_backups_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -27,6 +39,158 @@ size_t active_backups = 0;     // Number of active backups
 size_t max_backups;            // Maximum allowed simultaneous backups
 size_t max_threads;            // Maximum allowed simultaneous threads
 char* jobs_directory = NULL;
+int active_sessions = 0;
+int active_threads = 0;
+
+Message process_register_message(const char *message_buffer) {
+  if (strlen(message_buffer) < 120) {
+    fprintf(stderr, "Error: Buffer size too small.\n");
+    exit(EXIT_FAILURE);
+  }
+
+  Message output;
+  output.op_code = message_buffer[0];
+
+  strncpy(output.request_pipe, message_buffer + 1, MAX_PIPE_PATH_LENGTH);
+  output.request_pipe[MAX_PIPE_PATH_LENGTH] = '\0';
+
+  strncpy(output.response_pipe, message_buffer + 1 + MAX_PIPE_PATH_LENGTH, MAX_PIPE_PATH_LENGTH);
+  output.response_pipe[MAX_PIPE_PATH_LENGTH] = '\0';
+
+  strncpy(output.notification_pipe, message_buffer + 1 + 2 * MAX_PIPE_PATH_LENGTH, MAX_PIPE_PATH_LENGTH);
+  output.notification_pipe[MAX_PIPE_PATH_LENGTH] = '\0';
+
+  return output;
+}
+
+int notify(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_STRING_SIZE], int deleted) {
+  char* key = NULL;
+  char* value = NULL;
+  
+  for (size_t i = 0; i < num_pairs; i++) {
+    key = keys[i];
+    if(values != NULL)
+      value = values[i];
+
+    char key_buffer[41];
+    strncpy(key_buffer, key, strlen(key));
+    for (size_t j = strlen(key); j < 41; j++) {
+      key_buffer[j] = '\0';
+    }
+
+    char value_buffer[41];
+    if (values != NULL){
+      strncpy(value_buffer, value, strlen(value));
+      for (size_t k = strlen(value); k < 41; k++) {
+        value_buffer[k] = '\0';
+      }
+    }
+
+    InnerNode* current = findKey(key);
+    while (current != NULL) {
+      int pipe = open(current->notification_pipe, O_WRONLY);
+      if (pipe == -1) {
+        fprintf(stderr, "Failed to open pipe %s\n", current->notification_pipe);
+        return -1;
+      }
+
+      write(pipe, key_buffer, 41); 
+      if(deleted) {
+        // DELETED padded with '\0' until 41 total characters
+        char deleted_message[41] = {0};
+        snprintf(deleted_message, sizeof(deleted_message), "DELETED");
+        write(pipe, deleted_message, 41);
+      } else {
+        write(pipe, value_buffer, 41);
+      }
+
+      close(pipe);
+      current = current->next;
+    }
+  }
+  return 0;
+}
+
+void *manage_subscriptions(void *arg) {
+  Message *args = (Message *) arg;
+  int current_subscriptions = 0;
+
+  int request_pipe = open(args->request_pipe, O_RDONLY);
+  if (request_pipe == -1) {
+    fprintf(stderr, "Failed to open request pipe %s\n", args->request_pipe);
+    free(args);
+    active_sessions--;
+    pthread_exit(NULL);
+  }
+
+  int response_pipe = open(args->response_pipe, O_WRONLY);
+  if (response_pipe == -1) {
+    fprintf(stderr, "Failed to open response pipe %s\n", args->response_pipe);
+    close(request_pipe);
+    free(args);
+    active_sessions--;
+    pthread_exit(NULL);
+  }
+
+  char buffer[41];
+  ssize_t bytes_read;
+  while (1) {
+    bytes_read = read(request_pipe, buffer, 41);
+    if (bytes_read == -1) {
+      fprintf(stderr, "Failed to read from pipe\n");
+      break;
+    }
+
+    if (bytes_read < 41 && bytes_read > 0) {
+      if(buffer[0] == 2) {
+        // disconnect
+        break;
+      }
+    } else if (bytes_read == 41) {
+      if(buffer[0] == OP_CODE_SUBSCRIBE) {
+        // subscribe
+        char key[40];
+        strncpy(key, &buffer[1], 40);
+        key[39] = '\0';
+
+        // response
+        if(current_subscriptions >= MAX_NUMBER_SUB || !kvs_find_key(key)) {
+          char message[2];
+          message[0] = OP_CODE_SUBSCRIBE;
+          message[1] = FAILURE;
+          write(response_pipe, message, 2);
+        } else {
+          char message[2];
+          message[0] = OP_CODE_SUBSCRIBE;
+          message[1] = SUCCESS;
+          write(response_pipe, message, 2);
+          addToList(key, args->notification_pipe);
+          current_subscriptions++;
+        }
+      } else if(buffer[0] == OP_CODE_UNSUBSCRIBE) {
+        // unsubscribe
+        char key[40];
+        strncpy(key, &buffer[1], 40);
+        key[39] = '\0';
+        removeFromList(key, args->notification_pipe);
+
+        // response
+        char message[2];
+        message[0] = OP_CODE_UNSUBSCRIBE;
+        message[1] = SUCCESS;
+        write(response_pipe, message, 2);
+        current_subscriptions--;
+      }
+    }
+  }
+
+  write_str(response_pipe, "20");
+  close(request_pipe);
+  close(response_pipe);
+  active_sessions--;
+  free(args);
+  pthread_exit(NULL);
+}
 
 int filter_job_files(const struct dirent* entry) {
     const char* dot = strrchr(entry->d_name, '.');
@@ -75,6 +239,8 @@ static int run_job(int in_fd, int out_fd, char* filename) {
 
         if (kvs_write(num_pairs, keys, values)) {
           write_str(STDERR_FILENO, "Failed to write pair\n");
+        } else if (notify(num_pairs, keys, values, 0)) {
+          write_str(STDERR_FILENO, "Failed to notify write\n");
         }
         break;
 
@@ -101,6 +267,8 @@ static int run_job(int in_fd, int out_fd, char* filename) {
 
         if (kvs_delete(num_pairs, keys, out_fd)) {
           write_str(STDERR_FILENO, "Failed to delete pair\n");
+        } else if (notify(num_pairs, keys, NULL, 1)) {
+          write_str(STDERR_FILENO, "Failed to notify delete\n");
         }
         break;
 
@@ -228,11 +396,11 @@ static void* get_file(void* arguments) {
     return NULL;
   }
 
+  active_threads--;
   pthread_exit(NULL);
 }
 
-
-static void dispatch_threads(DIR* dir) {
+static void dispatch_threads(DIR* dir, int register_pipe) {
   pthread_t* threads = malloc(max_threads * sizeof(pthread_t));
 
   if (threads == NULL) {
@@ -242,17 +410,52 @@ static void dispatch_threads(DIR* dir) {
 
   struct SharedData thread_data = {dir, jobs_directory, PTHREAD_MUTEX_INITIALIZER};
 
-
   for (size_t i = 0; i < max_threads; i++) {
     if (pthread_create(&threads[i], NULL, get_file, (void*)&thread_data) != 0) {
       fprintf(stderr, "Failed to create thread %zu\n", i);
       pthread_mutex_destroy(&thread_data.directory_mutex);
       free(threads);
       return;
+    } else {
+      active_threads++;
     }
   }
 
-  // ler do FIFO de registo
+  while(1) {
+    int bytes_read;
+    char register_message[121];
+    Message processed_registry;
+    while ((bytes_read = (int)read(register_pipe, register_message, 121)) > 0 && active_sessions < MAX_SESSIONS) {
+      if (bytes_read == 121) {
+        processed_registry = process_register_message(register_message);
+      } else {
+        fprintf(stderr, "Incomplete message received\n");
+        continue;
+      }
+
+      // create copy of processed_registry for thread
+      Message *managing_thread_data = malloc(sizeof(Message));
+      if (managing_thread_data == NULL) {
+        fprintf(stderr, "Failed to allocate memory for thread data\n");
+        break;
+      }
+      *managing_thread_data = processed_registry;
+
+      // create and detach session threads
+      pthread_t thread;
+      if (pthread_create(&thread, NULL, manage_subscriptions, (void *)managing_thread_data) != 0) {
+        fprintf(stderr, "Failed to create session thread\n");
+        free(managing_thread_data);
+        break;
+      }
+      pthread_detach(thread);
+      active_sessions++;
+    }
+
+    if (active_threads == 0) {
+      break;
+    }
+  }
 
   for (unsigned int i = 0; i < max_threads; i++) {
     if (pthread_join(threads[i], NULL) != 0) {
@@ -270,14 +473,14 @@ static void dispatch_threads(DIR* dir) {
   free(threads);
 }
 
-
 int main(int argc, char** argv) {
-  if (argc < 4) {
+  if (argc < 5) {
     write_str(STDERR_FILENO, "Usage: ");
     write_str(STDERR_FILENO, argv[0]);
     write_str(STDERR_FILENO, " <jobs_dir>");
 		write_str(STDERR_FILENO, " <max_threads>");
 		write_str(STDERR_FILENO, " <max_backups> \n");
+		write_str(STDERR_FILENO, " <register_pipe_path> \n");
     return 1;
   }
 
@@ -319,7 +522,21 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  dispatch_threads(dir);
+  // create and open the register pipe
+  char* register_pipe_path = "/tmp/";
+  strncat(register_pipe_path, argv[4], strlen(argv[4]) * sizeof(char));
+  if(mkfifo(register_pipe_path, 0666) == -1 && errno != EEXIST) {
+    fprintf(stderr, "Failed to create register pipe\n");
+    return 1;
+  }
+
+  int register_pipe = open(register_pipe_path, O_RDONLY);
+  if (register_pipe == -1) {
+    fprintf(stderr, "Failed to open register pipe\n");
+    return 1;
+  }
+
+  dispatch_threads(dir, register_pipe);
 
   if (closedir(dir) == -1) {
     fprintf(stderr, "Failed to close directory\n");

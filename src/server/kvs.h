@@ -20,7 +20,9 @@ typedef struct HashTable {
 /// @return Newly created hash table, NULL on failure
 struct HashTable *create_hash_table();
 
-int hash(const char *key); 
+int hash(const char *key);
+
+int find_key(HashTable *ht, const char *key);
 
 // Writes a key value pair in the hash table.
 // @param ht The hash table.

@@ -30,6 +30,18 @@ int kvs_init() {
   return kvs_table == NULL;
 }
 
+int kvs_find_key(const char *key) {
+  if (kvs_table == NULL) {
+    fprintf(stderr, "KVS state must be initialized\n");
+    return 1;
+  }
+
+  pthread_rwlock_rdlock(&kvs_table->tablelock);
+  int result = find_key(kvs_table, key); 
+  pthread_rwlock_unlock(&kvs_table->tablelock);
+  return result;
+}
+
 int kvs_terminate() {
   if (kvs_table == NULL) {
     fprintf(stderr, "KVS state must be initialized\n");
@@ -96,6 +108,7 @@ int kvs_delete(size_t num_pairs, char keys[][MAX_STRING_SIZE], int fd) {
 
   int aux = 0;
   for (size_t i = 0; i < num_pairs; i++) {
+    if (delete_pair(kvs_table, keys[i]) != 0) {
       if (!aux) {
         write_str(fd, "[");
         aux = 1;
@@ -103,6 +116,7 @@ int kvs_delete(size_t num_pairs, char keys[][MAX_STRING_SIZE], int fd) {
       char str[MAX_STRING_SIZE];
       snprintf(str, MAX_STRING_SIZE, "(%s,KVSMISSING)", keys[i]);
       write_str(fd, str);
+    }
   }
   if (aux) {
     write_str(fd, "]\n");
@@ -133,7 +147,7 @@ void kvs_show(int fd) {
   pthread_rwlock_unlock(&kvs_table->tablelock);
 }
 
-int kvs_backup(size_t num_backup,char* job_filename , char* directory) {
+int kvs_backup(size_t num_backup, char *job_filename, char *directory) {
   pid_t pid;
   char bck_name[50];
   snprintf(bck_name, sizeof(bck_name), "%s/%s-%ld.bck", directory, strtok(job_filename, "."),
@@ -144,7 +158,6 @@ int kvs_backup(size_t num_backup,char* job_filename , char* directory) {
   pthread_rwlock_unlock(&kvs_table->tablelock);
   if (pid == 0) {
     // functions used here have to be async signal safe, since this
-    // fork happens in a multi thread context (see man fork)
     int fd = open(bck_name, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     for (int i = 0; i < TABLE_SIZE; i++) {
       KeyNode *keyNode = kvs_table->table[i]; // Get the next list head
@@ -152,7 +165,6 @@ int kvs_backup(size_t num_backup,char* job_filename , char* directory) {
         char aux[MAX_STRING_SIZE];
         aux[0] = '(';
         size_t num_bytes_copied = 1; // the "("
-        // the - 1 are all to leave space for the '/0'
         num_bytes_copied += strn_memcpy(aux + num_bytes_copied,
                                         keyNode->key, MAX_STRING_SIZE - num_bytes_copied - 1);
         num_bytes_copied += strn_memcpy(aux + num_bytes_copied,

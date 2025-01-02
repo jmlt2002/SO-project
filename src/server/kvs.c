@@ -28,6 +28,23 @@ struct HashTable* create_hash_table() {
 	return ht;
 }
 
+int find_key(HashTable *ht, const char *key) {
+    int index = hash(key);
+
+    KeyNode *keyNode = ht->table[index];
+    KeyNode *previousNode;
+
+    while (keyNode != NULL) {
+        if (strcmp(keyNode->key, key) == 0) {
+            return 1;
+        }
+        previousNode = keyNode;
+        keyNode = previousNode->next;
+    }
+
+    return 0;
+}
+
 int write_pair(HashTable *ht, const char *key, const char *value) {
     int index = hash(key);
 

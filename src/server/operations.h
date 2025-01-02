@@ -8,6 +8,8 @@
 /// @return 0 if the KVS state was initialized successfully, 1 otherwise.
 int kvs_init();
 
+int kvs_find_key(const char *key);
+
 /// Destroys the KVS state.
 /// @return 0 if the KVS state was terminated successfully, 1 otherwise.
 int kvs_terminate();
