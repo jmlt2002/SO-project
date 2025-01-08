@@ -9,12 +9,13 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <string.h>
 
 const char *req_pipe_path_glob, *resp_pipe_path_glob, *notif_pipe_path_glob, *server_pipe_path_glob;
-int server_pipe_glob, req_pipe_glob, resp_pipe_glob, notif_pipe_glob;
+int server_pipe_glob, req_pipe_glob, resp_pipe_glob;
 
 void add_to_message(char* message, const char* data, int start, int end) {
-    for (int i = start; i < end && *data != '\0'; ++i, ++data) {
+    for (int i = start; i < end; ++i, ++data) {
         message[i] = *data;
     }
 }
@@ -75,7 +76,7 @@ int kvs_connect(char const* req_pipe_path, char const* resp_pipe_path, char cons
 
   char response[2];
   if (read(resp_pipe, response, 2) == -1) {
-    fprintf(stderr, "Failed to read response\n");
+    fprintf(stderr, "Failed to read response: connect\n");
     close(server_pipe);
     close(resp_pipe);
     return 1;
@@ -88,7 +89,7 @@ int kvs_connect(char const* req_pipe_path, char const* resp_pipe_path, char cons
     return 1;
   }
 
-  fprintf(stdout, "Server returned 0 for operation: connect\n");
+  printf("Server returned 0 for operation: connect\n");
 
   int req_pipe = open(req_pipe_path, O_WRONLY);
   if (req_pipe == -1) {
@@ -99,17 +100,9 @@ int kvs_connect(char const* req_pipe_path, char const* resp_pipe_path, char cons
   }
   req_pipe_glob = req_pipe;
 
-  int notif_pipe = open(notif_pipe_path, O_WRONLY);
-  if (notif_pipe == -1) {
-    fprintf(stderr, "Failed to open notification pipe\n");
-    close(server_pipe);
-    close(req_pipe);
-    close(resp_pipe);
-    return 1;
-  }
-  notif_pipe_glob = notif_pipe;
+  printf("Connected to server\n");
 
-  return notif_pipe;
+  return 0;
 }
 
 int kvs_disconnect(void) {
@@ -120,7 +113,7 @@ int kvs_disconnect(void) {
 
   char response[2];
   if (read(resp_pipe_glob, response, 2) == -1) {
-    fprintf(stderr, "Failed to read response\n");
+    fprintf(stderr, "Failed to read response: disconnect\n");
     return 1;
   } else if (response[1] != SUCCESS) {
     fprintf(stdout, "Server returned 1 for operation: disconnect\n");
@@ -142,11 +135,6 @@ int kvs_disconnect(void) {
 
   if (close(resp_pipe_glob) == -1) {
     fprintf(stderr, "Failed to close response pipe\n");
-    return 1;
-  }
-
-  if (close(notif_pipe_glob) == -1) {
-    fprintf(stderr, "Failed to close notification pipe\n");
     return 1;
   }
 
@@ -178,7 +166,7 @@ int kvs_subscribe(const char* key) {
 
   char response[2];
   if (read(resp_pipe_glob, response, 2) == -1) {
-    fprintf(stderr, "Failed to read response\n");
+    fprintf(stderr, "Failed to read response: subscribe\n");
     return 1;
   } else if (response[1] != SUCCESS) {
     fprintf(stdout, "Server returned 1 for operation: subscribe\n");
@@ -198,7 +186,7 @@ int kvs_unsubscribe(const char* key) {
 
   char response[2];
   if (read(resp_pipe_glob, response, 2) == -1) {
-      fprintf(stderr, "Failed to read response\n");
+      fprintf(stderr, "Failed to read response: unsubscribe\n");
       return 1;
   } else if (response[0] != OP_CODE_UNSUBSCRIBE || response[1] != SUCCESS) {
       fprintf(stdout, "Server returned 1 for operation: unsubscribe\n");

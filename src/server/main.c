@@ -9,13 +9,15 @@
 #include <sys/wait.h>
 #include <stdio.h>
 #include <errno.h>
+#include <pthread.h>
+#include <semaphore.h>
 
 #include "constants.h"
 #include "parser.h"
 #include "operations.h"
 #include "io.h"
-#include "pthread.h"
 #include "subscriptions.h"
+#include "pc_buffer.h"
 #include "src/common/protocol.h"
 #include "src/common/constants.h"
 
@@ -26,30 +28,24 @@ struct SharedData {
 };
 
 typedef struct {
-    char op_code;
-    char request_pipe[MAX_PIPE_PATH_LENGTH + 1];
-    char response_pipe[MAX_PIPE_PATH_LENGTH + 1];
-    char notification_pipe[MAX_PIPE_PATH_LENGTH + 1];
-} Message;
+  Buffer buffer;
+  sem_t semaphore;
+  pthread_mutex_t mutex;
+  int active_sessions;
+} PCBuffer;
 
-pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t n_current_backups_lock = PTHREAD_MUTEX_INITIALIZER;
 
 size_t active_backups = 0;     // Number of active backups
+int active_threads = 0;        // Number of active threads
 size_t max_backups;            // Maximum allowed simultaneous backups
 size_t max_threads;            // Maximum allowed simultaneous threads
 char* jobs_directory = NULL;
-int active_sessions = 0;
-int active_threads = 0;
+// TODO: add mutexes to active_threads and active_sessions
+PCBuffer pc_buffer;
 
-Message process_register_message(const char *message_buffer) {
-  if (strlen(message_buffer) < 120) {
-    fprintf(stderr, "Error: Buffer size too small.\n");
-    exit(EXIT_FAILURE);
-  }
-
-  Message output;
-  output.op_code = message_buffer[0];
+BufferData process_register_message(const char *message_buffer) {
+  BufferData output = {NULL, NULL, NULL};
 
   strncpy(output.request_pipe, message_buffer + 1, MAX_PIPE_PATH_LENGTH);
   output.request_pipe[MAX_PIPE_PATH_LENGTH] = '\0';
@@ -111,85 +107,121 @@ int notify(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_STR
   return 0;
 }
 
-void *manage_subscriptions(void *arg) {
-  Message *args = (Message *) arg;
+static void *manage_subscriptions() {
   int current_subscriptions = 0;
+  int response_pipe, request_pipe;
 
-  int request_pipe = open(args->request_pipe, O_RDONLY);
-  if (request_pipe == -1) {
-    fprintf(stderr, "Failed to open request pipe %s\n", args->request_pipe);
-    free(args);
-    active_sessions--;
-    pthread_exit(NULL);
-  }
-
-  int response_pipe = open(args->response_pipe, O_WRONLY);
-  if (response_pipe == -1) {
-    fprintf(stderr, "Failed to open response pipe %s\n", args->response_pipe);
-    close(request_pipe);
-    free(args);
-    active_sessions--;
-    pthread_exit(NULL);
-  }
-
-  char buffer[41];
-  ssize_t bytes_read;
   while (1) {
-    bytes_read = read(request_pipe, buffer, 41);
-    if (bytes_read == -1) {
-      fprintf(stderr, "Failed to read from pipe\n");
-      break;
+    sem_wait(&pc_buffer.semaphore);
+
+    pthread_mutex_lock(&pc_buffer.mutex);
+    if(pc_buffer.active_sessions >= MAX_SESSION_COUNT) {
+      pthread_mutex_unlock(&pc_buffer.mutex);
+      continue;
+    } else {
+      pc_buffer.active_sessions++;
     }
 
-    if (bytes_read < 41 && bytes_read > 0) {
-      if(buffer[0] == 2) {
-        // disconnect
+    BufferData args = removeFromBuffer(&pc_buffer.buffer);
+    if (args.request_pipe == NULL) {
+      pc_buffer.active_sessions--;
+      pthread_mutex_unlock(&pc_buffer.mutex);
+      continue;
+    }
+    pthread_mutex_unlock(&pc_buffer.mutex);
+
+    response_pipe = open(args.response_pipe, O_WRONLY);
+    if (response_pipe == -1) {
+      fprintf(stderr, "Failed to open response pipe %s\n", args.response_pipe);
+      pthread_exit(NULL);
+    }
+    write_str(response_pipe, "10");
+
+    request_pipe = open(args.request_pipe, O_RDONLY);
+    if (request_pipe == -1) {
+      fprintf(stderr, "Failed to open request pipe %s\n", args.request_pipe);
+      close(response_pipe);
+      pthread_exit(NULL);
+    }
+
+    char buffer[41];
+    ssize_t bytes_read;
+    while (1) {
+      bytes_read = read(request_pipe, buffer, 41);
+      if (bytes_read == -1) {
+        fprintf(stderr, "Failed to read from pipe\n");
         break;
       }
-    } else if (bytes_read == 41) {
-      if(buffer[0] == OP_CODE_SUBSCRIBE) {
-        // subscribe
-        char key[40];
-        strncpy(key, &buffer[1], 40);
-        key[39] = '\0';
 
-        // response
-        if(current_subscriptions >= MAX_NUMBER_SUB || !kvs_find_key(key)) {
+      if (bytes_read < 41 && bytes_read > 0) {
+        if(buffer[0] == OP_CODE_DISCONNECT) {
+          // disconnect
+          break;
+        }
+      } else if (bytes_read == 41) {
+        if(buffer[0] == OP_CODE_SUBSCRIBE) {
+          // subscribe
+          char key[40];
+          strncpy(key, &buffer[1], 40);
+          key[39] = '\0';
+
+          // response
+          if(current_subscriptions >= MAX_NUMBER_SUB || !kvs_find_key(key)) {
+            char message[2];
+            message[0] = OP_CODE_SUBSCRIBE;
+            message[1] = FAILURE;
+            write(response_pipe, message, 2);
+          } else {
+            char message[2];
+            message[0] = OP_CODE_SUBSCRIBE;
+            message[1] = SUCCESS;
+            write(response_pipe, message, 2);
+            addToList(key, args.notification_pipe);
+            current_subscriptions++;
+          }
+        } else if(buffer[0] == OP_CODE_UNSUBSCRIBE) {
+          // unsubscribe
+          char key[40];
+          strncpy(key, &buffer[1], 40);
+          key[39] = '\0';
+          removeFromList(key, args.notification_pipe);
+
+          // response
           char message[2];
-          message[0] = OP_CODE_SUBSCRIBE;
-          message[1] = FAILURE;
-          write(response_pipe, message, 2);
-        } else {
-          char message[2];
-          message[0] = OP_CODE_SUBSCRIBE;
+          message[0] = OP_CODE_UNSUBSCRIBE;
           message[1] = SUCCESS;
           write(response_pipe, message, 2);
-          addToList(key, args->notification_pipe);
-          current_subscriptions++;
+          current_subscriptions--;
         }
-      } else if(buffer[0] == OP_CODE_UNSUBSCRIBE) {
-        // unsubscribe
-        char key[40];
-        strncpy(key, &buffer[1], 40);
-        key[39] = '\0';
-        removeFromList(key, args->notification_pipe);
-
-        // response
-        char message[2];
-        message[0] = OP_CODE_UNSUBSCRIBE;
-        message[1] = SUCCESS;
-        write(response_pipe, message, 2);
-        current_subscriptions--;
       }
     }
+
+    // TODO: check disconnect logic
+    write_str(response_pipe, "20");
+    close(request_pipe);
+    close(response_pipe);
+    pthread_mutex_lock(&pc_buffer.mutex);
+    pc_buffer.active_sessions--;
+    pthread_mutex_unlock(&pc_buffer.mutex);
   }
 
   write_str(response_pipe, "20");
   close(request_pipe);
   close(response_pipe);
-  active_sessions--;
-  free(args);
   pthread_exit(NULL);
+}
+
+static void dispatch_session_threads() {
+  // TODO: check if detach logic is correct
+
+  for (size_t i = 0; i < MAX_SESSION_COUNT; i++) {
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, manage_subscriptions, NULL) != 0) {
+      fprintf(stderr, "Failed to create session thread\n");
+      break;
+    }
+    pthread_detach(thread);
+  }
 }
 
 int filter_job_files(const struct dirent* entry) {
@@ -400,7 +432,7 @@ static void* get_file(void* arguments) {
   pthread_exit(NULL);
 }
 
-static void dispatch_threads(DIR* dir, int register_pipe) {
+static void dispatch_job_threads(DIR* dir) {
   pthread_t* threads = malloc(max_threads * sizeof(pthread_t));
 
   if (threads == NULL) {
@@ -421,42 +453,7 @@ static void dispatch_threads(DIR* dir, int register_pipe) {
     }
   }
 
-  while(1) {
-    int bytes_read;
-    char register_message[121];
-    Message processed_registry;
-    while ((bytes_read = (int)read(register_pipe, register_message, 121)) > 0 && active_sessions < MAX_SESSIONS) {
-      if (bytes_read == 121) {
-        processed_registry = process_register_message(register_message);
-      } else {
-        fprintf(stderr, "Incomplete message received\n");
-        continue;
-      }
-
-      // create copy of processed_registry for thread
-      Message *managing_thread_data = malloc(sizeof(Message));
-      if (managing_thread_data == NULL) {
-        fprintf(stderr, "Failed to allocate memory for thread data\n");
-        break;
-      }
-      *managing_thread_data = processed_registry;
-
-      // create and detach session threads
-      pthread_t thread;
-      if (pthread_create(&thread, NULL, manage_subscriptions, (void *)managing_thread_data) != 0) {
-        fprintf(stderr, "Failed to create session thread\n");
-        free(managing_thread_data);
-        break;
-      }
-      pthread_detach(thread);
-      active_sessions++;
-    }
-
-    if (active_threads == 0) {
-      break;
-    }
-  }
-
+  // FIXME: main function will not progress after dispatch_threads because of this join loop
   for (unsigned int i = 0; i < max_threads; i++) {
     if (pthread_join(threads[i], NULL) != 0) {
       fprintf(stderr, "Failed to join thread %u\n", i);
@@ -523,8 +520,9 @@ int main(int argc, char** argv) {
   }
 
   // create and open the register pipe
-  char* register_pipe_path = "/tmp/";
-  strncat(register_pipe_path, argv[4], strlen(argv[4]) * sizeof(char));
+  char register_pipe_path[40];
+  strncpy(register_pipe_path, argv[4], sizeof(register_pipe_path) - 1);
+  register_pipe_path[sizeof(register_pipe_path) - 1] = '\0';
   if(mkfifo(register_pipe_path, 0666) == -1 && errno != EEXIST) {
     fprintf(stderr, "Failed to create register pipe\n");
     return 1;
@@ -536,8 +534,35 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  dispatch_threads(dir, register_pipe);
+  initBuffer(&pc_buffer.buffer);
+  sem_init(&pc_buffer.semaphore, 0, 1);
+  pthread_mutex_init(&pc_buffer.mutex, NULL);
+  pc_buffer.active_sessions = 0;
 
+  dispatch_session_threads();
+  dispatch_job_threads(dir);
+
+  while(1) {
+    int bytes_read;
+    char register_message[121];
+    BufferData processed_registry;
+    while ((bytes_read = (int)read(register_pipe, register_message, 121)) > 0) {
+      if (bytes_read == 121 && register_message[0] == OP_CODE_CONNECT) {
+        processed_registry = process_register_message(register_message);
+      } else {
+        fprintf(stderr, "Invalid message received\n");
+        continue;
+      }
+
+      insertInBuffer(&pc_buffer.buffer, processed_registry);
+      sem_post(&pc_buffer.semaphore);
+    }
+
+    if (active_threads == 0) {
+      break;
+    }
+  }
+  
   if (closedir(dir) == -1) {
     fprintf(stderr, "Failed to close directory\n");
     return 0;
@@ -548,6 +573,8 @@ int main(int argc, char** argv) {
     active_backups--;
   }
 
+  sem_destroy(&pc_buffer.semaphore); // Destroy the semaphore
+  pthread_mutex_destroy(&pc_buffer.mutex);
   kvs_terminate();
 
   return 0;

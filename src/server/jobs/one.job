@@ -1,4 +1,5 @@
 WRITE [(a,anna)(b,bernardo)]
+WAIT 5000
 WRITE [(d,dinis)(c,carlota)]
 READ [x,z,l,v]
 SHOW

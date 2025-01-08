@@ -1,3 +1,6 @@
+#ifndef SUBSCRIPTIONS_H
+#define SUBSCRIPTIONS_H
+
 #include "src/common/constants.h"
 
 // linked list that represents the subscriptions of a certain key
@@ -28,3 +31,5 @@ void removeFromList(char* key, char* pipe_path);
 InnerNode* findKey(char* key);
 
 void freeEverything();
+
+#endif

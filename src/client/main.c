@@ -11,7 +11,7 @@
 #include "src/common/io.h"
 
 typedef struct {
-    int notif_pipe;
+    char* notif_pipe_path;
     pthread_mutex_t* lock;
     int* is_running;
 } notif_thread_data_t;
@@ -22,6 +22,12 @@ void* notification_handler(void* arg) {
     char key[MAX_STRING_SIZE];
     int is_value = 0;
 
+    int notif_pipe = open(data->notif_pipe_path, O_RDONLY);
+    if (notif_pipe == -1) {
+        perror("Failed to open notification pipe");
+        return NULL;
+    }
+
     while (1) {
         pthread_mutex_lock(data->lock);
         if (!(*data->is_running)) {
@@ -30,9 +36,9 @@ void* notification_handler(void* arg) {
         }
         pthread_mutex_unlock(data->lock);
         
-        ssize_t bytes_read = read(data->notif_pipe, buffer, MAX_STRING_SIZE);
+        ssize_t bytes_read = read(notif_pipe, buffer, MAX_STRING_SIZE);
         if (bytes_read > 0 && is_value) {
-            printf("(%s,%s)", key, buffer);
+            printf("(%s,%s)\n", key, buffer);
             is_value = 0;
         } else if (bytes_read > 0 && !is_value) {
             strncpy(key, buffer, MAX_STRING_SIZE);
@@ -46,6 +52,7 @@ void* notification_handler(void* arg) {
         }
     }
 
+    close(notif_pipe);
     return NULL;
 }
 
@@ -58,12 +65,9 @@ int main(int argc, char* argv[]) {
   char req_pipe_path[40] = "/tmp/req";
   char resp_pipe_path[40] = "/tmp/resp";
   char notif_pipe_path[40] = "/tmp/notif";
-  char register_pipe_path[40] = "/tmp/";
-  strncat(register_pipe_path, argv[2], strlen(argv[2]) * sizeof(char));
-
-  char keys[MAX_NUMBER_SUB][MAX_STRING_SIZE] = {0};
-  unsigned int delay_ms;
-  size_t num;
+  char register_pipe_path[40];
+  strncpy(register_pipe_path, argv[2], sizeof(register_pipe_path) - 1);
+  register_pipe_path[sizeof(register_pipe_path) - 1] = '\0';
 
   strncat(req_pipe_path, argv[1], strlen(argv[1]) * sizeof(char));
   strncat(resp_pipe_path, argv[1], strlen(argv[1]) * sizeof(char));
@@ -82,8 +86,8 @@ int main(int argc, char* argv[]) {
     notif_pipe_path[i] = '\0';
   }
   
-  int notif_pipe = kvs_connect(req_pipe_path, resp_pipe_path, register_pipe_path, notif_pipe_path);
-  if (notif_pipe == -1) {
+  int ret = kvs_connect(req_pipe_path, resp_pipe_path, register_pipe_path, notif_pipe_path);
+  if (ret != 0) {
     fprintf(stderr, "Failed to connect to the server\n");
     return 1;
   }
@@ -91,17 +95,18 @@ int main(int argc, char* argv[]) {
   pthread_mutex_t lock;
   pthread_mutex_init(&lock, NULL);
   int is_running = 1;
-  notif_thread_data_t data = {notif_pipe, &lock, &is_running};
+  notif_thread_data_t data = {notif_pipe_path, &lock, &is_running};
   pthread_t notif_thread;
   pthread_create(&notif_thread, NULL, notification_handler, &data);
+
+  char keys[MAX_NUMBER_SUB][MAX_STRING_SIZE] = {0};
+  unsigned int delay_ms;
+  size_t num;
 
   while (1) {
     switch (get_next(STDIN_FILENO)) {
       case CMD_DISCONNECT:
-        if (kvs_disconnect() != 0) {
-          fprintf(stderr, "Failed to disconnect to the server\n");
-          return 1;
-        }
+        kvs_disconnect();
 
         pthread_mutex_lock(&lock);
         is_running = 0;
@@ -116,13 +121,8 @@ int main(int argc, char* argv[]) {
           fprintf(stderr, "Invalid command. See HELP for usage\n");
           continue;
         }
-         
-        if (kvs_subscribe(keys[0])) {
-            fprintf(stderr, "Command subscribe failed\n");
-        }
 
-        // TODO: print out the result of the subscribe command
-
+        kvs_subscribe(keys[0]);
         break;
 
       case CMD_UNSUBSCRIBE:
@@ -131,13 +131,8 @@ int main(int argc, char* argv[]) {
           fprintf(stderr, "Invalid command. See HELP for usage\n");
           continue;
         }
-         
-        if (kvs_unsubscribe(keys[0])) {
-            fprintf(stderr, "Command subscribe failed\n");
-        }
 
-        // TODO: print out the result of the unsubscribe command
-
+        kvs_unsubscribe(keys[0]);
         break;
 
       case CMD_DELAY:
