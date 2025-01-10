@@ -33,7 +33,7 @@ void insertInBuffer(Buffer* b, BufferData data) {
 
 BufferData removeFromBuffer(Buffer* b) {
     if (isBufferEmpty(b)) {
-        return (BufferData) {NULL, NULL, NULL};
+        return (BufferData) {{0}, {0}, {0}};
     }
 
     BufferNode* temp = b->front;
@@ -46,4 +46,10 @@ BufferData removeFromBuffer(Buffer* b) {
 
     free(temp);
     return value;
+}
+
+void destroyBuffer(Buffer* b) {
+    while (!isBufferEmpty(b)) {
+        removeFromBuffer(b);
+    }
 }

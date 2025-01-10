@@ -18,8 +18,8 @@ typedef struct {
 
 void* notification_handler(void* arg) {
     notif_thread_data_t* data = (notif_thread_data_t*)arg;
-    char buffer[MAX_STRING_SIZE];
-    char key[MAX_STRING_SIZE];
+    char buffer[MAX_STRING_SIZE + 1];
+    char key[MAX_STRING_SIZE + 1];
     int is_value = 0;
 
     int notif_pipe = open(data->notif_pipe_path, O_RDONLY);
@@ -36,7 +36,7 @@ void* notification_handler(void* arg) {
         }
         pthread_mutex_unlock(data->lock);
         
-        ssize_t bytes_read = read(notif_pipe, buffer, MAX_STRING_SIZE);
+        ssize_t bytes_read = read(notif_pipe, buffer, MAX_STRING_SIZE + 1);
         if (bytes_read > 0 && is_value) {
             printf("(%s,%s)\n", key, buffer);
             is_value = 0;

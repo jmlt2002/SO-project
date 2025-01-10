@@ -86,6 +86,30 @@ void removeFromList(char* key, char* pipe_path) {
     }
 }
 
+void removeKey(char* key) {
+    OuterNode* current = subscriptions_head;
+    OuterNode* prev = NULL;
+    while (current != NULL) {
+        if (strcmp(current->key, key) == 0) {
+            if (prev == NULL) {
+                subscriptions_head = current->next;
+            } else {
+                prev->next = current->next;
+            }
+            free(current->key);
+            InnerNode* innerCurrent = current->innerList;
+            while (innerCurrent != NULL) {
+                InnerNode* temp = innerCurrent;
+                innerCurrent = innerCurrent->next;
+                free(temp);
+            }
+            free(current);
+            return;
+        }
+        prev = current;
+        current = current->next;
+    }
+}
 
 InnerNode* findKey(char* key) {
     OuterNode* current = subscriptions_head;

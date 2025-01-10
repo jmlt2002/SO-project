@@ -37,24 +37,22 @@ typedef struct {
 pthread_mutex_t n_current_backups_lock = PTHREAD_MUTEX_INITIALIZER;
 
 size_t active_backups = 0;     // Number of active backups
-int active_threads = 0;        // Number of active threads
 size_t max_backups;            // Maximum allowed simultaneous backups
 size_t max_threads;            // Maximum allowed simultaneous threads
 char* jobs_directory = NULL;
-// TODO: add mutexes to active_threads and active_sessions
 PCBuffer pc_buffer;
 
 BufferData process_register_message(const char *message_buffer) {
-  BufferData output = {NULL, NULL, NULL};
+  BufferData output = {{0}, {0}, {0}};
 
   strncpy(output.request_pipe, message_buffer + 1, MAX_PIPE_PATH_LENGTH);
-  output.request_pipe[MAX_PIPE_PATH_LENGTH] = '\0';
+  output.request_pipe[MAX_PIPE_PATH_LENGTH-1] = '\0';
 
   strncpy(output.response_pipe, message_buffer + 1 + MAX_PIPE_PATH_LENGTH, MAX_PIPE_PATH_LENGTH);
-  output.response_pipe[MAX_PIPE_PATH_LENGTH] = '\0';
+  output.response_pipe[MAX_PIPE_PATH_LENGTH-1] = '\0';
 
   strncpy(output.notification_pipe, message_buffer + 1 + 2 * MAX_PIPE_PATH_LENGTH, MAX_PIPE_PATH_LENGTH);
-  output.notification_pipe[MAX_PIPE_PATH_LENGTH] = '\0';
+  output.notification_pipe[MAX_PIPE_PATH_LENGTH-1] = '\0';
 
   return output;
 }
@@ -123,7 +121,7 @@ static void *manage_subscriptions() {
     }
 
     BufferData args = removeFromBuffer(&pc_buffer.buffer);
-    if (args.request_pipe == NULL) {
+    if (args.request_pipe[0] == '\0') {
       pc_buffer.active_sessions--;
       pthread_mutex_unlock(&pc_buffer.mutex);
       continue;
@@ -144,6 +142,7 @@ static void *manage_subscriptions() {
       pthread_exit(NULL);
     }
 
+    char subscribed_keys[MAX_NUMBER_SUB][MAX_STRING_SIZE + 1] = {0};
     char buffer[41];
     ssize_t bytes_read;
     while (1) {
@@ -178,20 +177,35 @@ static void *manage_subscriptions() {
             write(response_pipe, message, 2);
             addToList(key, args.notification_pipe);
             current_subscriptions++;
+            strncpy(subscribed_keys[current_subscriptions - 1], key, 40);
+            subscribed_keys[current_subscriptions - 1][40] = '\0';
           }
         } else if(buffer[0] == OP_CODE_UNSUBSCRIBE) {
           // unsubscribe
           char key[40];
           strncpy(key, &buffer[1], 40);
           key[39] = '\0';
-          removeFromList(key, args.notification_pipe);
-
-          // response
           char message[2];
           message[0] = OP_CODE_UNSUBSCRIBE;
-          message[1] = SUCCESS;
-          write(response_pipe, message, 2);
+
+          if(!kvs_find_key(key) || findKey(key) == NULL) {
+            message[1] = FAILURE;
+            write(response_pipe, message, 2);
+          } else {
+            removeFromList(key, args.notification_pipe);
+            message[1] = SUCCESS;
+            write(response_pipe, message, 2);
+            current_subscriptions--;
+          }
+        }
+      }
+
+      // check if subscribed keys have been deleted
+      for(int i = 0; i < MAX_NUMBER_SUB; i++) {
+        if(subscribed_keys[i][0] != '\0' && findKey(subscribed_keys[i]) == NULL) {
+          removeFromList(subscribed_keys[i], args.notification_pipe);
           current_subscriptions--;
+          subscribed_keys[i][0] = '\0';
         }
       }
     }
@@ -256,8 +270,8 @@ static int entry_files(const char* dir, struct dirent* entry, char* in_path, cha
 static int run_job(int in_fd, int out_fd, char* filename) {
   size_t file_backups = 0;
   while (1) {
-    char keys[MAX_WRITE_SIZE][MAX_STRING_SIZE] = {0};
-    char values[MAX_WRITE_SIZE][MAX_STRING_SIZE] = {0};
+    char keys[MAX_WRITE_SIZE][MAX_STRING_SIZE] = {{0}};
+    char values[MAX_WRITE_SIZE][MAX_STRING_SIZE] = {{0}};
     unsigned int delay;
     size_t num_pairs;
 
@@ -302,6 +316,11 @@ static int run_job(int in_fd, int out_fd, char* filename) {
         } else if (notify(num_pairs, keys, NULL, 1)) {
           write_str(STDERR_FILENO, "Failed to notify delete\n");
         }
+
+        for(size_t i = 0; i < num_pairs; i++) {
+          removeKey(keys[i]);
+        }
+
         break;
 
       case CMD_SHOW:
@@ -428,19 +447,22 @@ static void* get_file(void* arguments) {
     return NULL;
   }
 
-  active_threads--;
   pthread_exit(NULL);
 }
 
+pthread_t* threads;
+struct SharedData thread_data;
 static void dispatch_job_threads(DIR* dir) {
-  pthread_t* threads = malloc(max_threads * sizeof(pthread_t));
-
+  threads = malloc(max_threads * sizeof(pthread_t));
+  
   if (threads == NULL) {
     fprintf(stderr, "Failed to allocate memory for threads\n");
     return;
   }
 
-  struct SharedData thread_data = {dir, jobs_directory, PTHREAD_MUTEX_INITIALIZER};
+  thread_data.dir = dir;
+  thread_data.dir_name = jobs_directory;
+  pthread_mutex_init(&thread_data.directory_mutex, NULL);
 
   for (size_t i = 0; i < max_threads; i++) {
     if (pthread_create(&threads[i], NULL, get_file, (void*)&thread_data) != 0) {
@@ -448,26 +470,8 @@ static void dispatch_job_threads(DIR* dir) {
       pthread_mutex_destroy(&thread_data.directory_mutex);
       free(threads);
       return;
-    } else {
-      active_threads++;
     }
   }
-
-  // FIXME: main function will not progress after dispatch_threads because of this join loop
-  for (unsigned int i = 0; i < max_threads; i++) {
-    if (pthread_join(threads[i], NULL) != 0) {
-      fprintf(stderr, "Failed to join thread %u\n", i);
-      pthread_mutex_destroy(&thread_data.directory_mutex);
-      free(threads);
-      return;
-    }
-  }
-
-  if (pthread_mutex_destroy(&thread_data.directory_mutex) != 0) {
-    fprintf(stderr, "Failed to destroy directory_mutex\n");
-  }
-
-  free(threads);
 }
 
 int main(int argc, char** argv) {
@@ -546,6 +550,7 @@ int main(int argc, char** argv) {
     int bytes_read;
     char register_message[121];
     BufferData processed_registry;
+
     while ((bytes_read = (int)read(register_pipe, register_message, 121)) > 0) {
       if (bytes_read == 121 && register_message[0] == OP_CODE_CONNECT) {
         processed_registry = process_register_message(register_message);
@@ -557,11 +562,22 @@ int main(int argc, char** argv) {
       insertInBuffer(&pc_buffer.buffer, processed_registry);
       sem_post(&pc_buffer.semaphore);
     }
+  }
 
-    if (active_threads == 0) {
-      break;
+  for (unsigned int i = 0; i < max_threads; i++) {
+    if (pthread_join(threads[i], NULL) != 0) {
+      fprintf(stderr, "Failed to join thread %u\n", i);
+      pthread_mutex_destroy(&thread_data.directory_mutex);
+      free(threads);
+      return 1;
     }
   }
+
+  if (pthread_mutex_destroy(&thread_data.directory_mutex) != 0) {
+    fprintf(stderr, "Failed to destroy directory_mutex\n");
+  }
+
+  free(threads);
   
   if (closedir(dir) == -1) {
     fprintf(stderr, "Failed to close directory\n");

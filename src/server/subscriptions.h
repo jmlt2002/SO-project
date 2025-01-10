@@ -28,6 +28,8 @@ void addToList(char* key, char* pipe_path);
 
 void removeFromList(char* key, char* pipe_path);
 
+void removeKey(char* key);
+
 InnerNode* findKey(char* key);
 
 void freeEverything();
