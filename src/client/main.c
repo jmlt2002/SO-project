@@ -13,47 +13,50 @@
 typedef struct {
     char* notif_pipe_path;
     pthread_mutex_t* lock;
-    int* is_running;
+    int is_running;
 } notif_thread_data_t;
 
-void* notification_handler(void* arg) {
-    notif_thread_data_t* data = (notif_thread_data_t*)arg;
-    char buffer[MAX_STRING_SIZE + 1];
-    char key[MAX_STRING_SIZE + 1];
-    int is_value = 0;
+// needs to be global so that parent thread can change value of is_running
+notif_thread_data_t data;
 
-    int notif_pipe = open(data->notif_pipe_path, O_RDONLY);
-    if (notif_pipe == -1) {
-        perror("Failed to open notification pipe");
-        return NULL;
-    }
+void* notification_handler() {
+  char buffer[MAX_STRING_SIZE + 1];
+  char key[MAX_STRING_SIZE + 1];
+  int is_value = 0;
 
-    while (1) {
-        pthread_mutex_lock(data->lock);
-        if (!(*data->is_running)) {
-            pthread_mutex_unlock(data->lock);
-            break;
-        }
-        pthread_mutex_unlock(data->lock);
-        
-        ssize_t bytes_read = read(notif_pipe, buffer, MAX_STRING_SIZE + 1);
-        if (bytes_read > 0 && is_value) {
-            printf("(%s,%s)\n", key, buffer);
-            is_value = 0;
-        } else if (bytes_read > 0 && !is_value) {
-            strncpy(key, buffer, MAX_STRING_SIZE);
-            key[MAX_STRING_SIZE] = '\0';
-            is_value = 1;
-        } else if (bytes_read == 0) {
-            // Pipe closed
-            break;
-        } else {
-            perror("Error reading from notification pipe");
-        }
-    }
-
-    close(notif_pipe);
+  int notif_pipe = open(data.notif_pipe_path, O_RDONLY);
+  if (notif_pipe == -1) {
+    perror("Failed to open notification pipe");
     return NULL;
+  }
+
+  while (1) {
+    pthread_mutex_lock(data.lock);
+    if (!data.is_running) {
+      pthread_mutex_unlock(data.lock);
+      break;
+    }
+    pthread_mutex_unlock(data.lock);
+    
+    ssize_t bytes_read = read(notif_pipe, buffer, MAX_STRING_SIZE + 1);
+    if (bytes_read > 0 && is_value) {
+      printf("(%s,%s)\n", key, buffer);
+      is_value = 0;
+    } else if (bytes_read > 0 && !is_value) {
+      strncpy(key, buffer, MAX_STRING_SIZE);
+      key[MAX_STRING_SIZE] = '\0';
+      is_value = 1;
+    } else if(bytes_read == 0) {
+      // EOF
+      // sigusr1 on server
+      break;
+    } else {
+      // bytes_read == -1
+      cleanup();
+    }
+  }
+
+  return NULL;
 }
 
 int main(int argc, char* argv[]) {
@@ -94,8 +97,9 @@ int main(int argc, char* argv[]) {
 
   pthread_mutex_t lock;
   pthread_mutex_init(&lock, NULL);
-  int is_running = 1;
-  notif_thread_data_t data = {notif_pipe_path, &lock, &is_running};
+  data.notif_pipe_path = notif_pipe_path;
+  data.lock = &lock;
+  data.is_running = 1;
   pthread_t notif_thread;
   pthread_create(&notif_thread, NULL, notification_handler, &data);
 
@@ -109,9 +113,10 @@ int main(int argc, char* argv[]) {
         kvs_disconnect();
 
         pthread_mutex_lock(&lock);
-        is_running = 0;
+        data.is_running = 0;
         pthread_mutex_unlock(&lock);
         pthread_join(notif_thread, NULL);
+        pthread_mutex_destroy(&lock);
         printf("Disconnected from server\n");
         return 0;
 

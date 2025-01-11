@@ -5,7 +5,7 @@
 
 // linked list that represents the subscriptions of a certain key
 typedef struct InnerNode {
-    char notification_pipe[MAX_PIPE_PATH_LENGTH];
+    int notification_pipe;
     struct InnerNode* next;
 } InnerNode;
 
@@ -16,22 +16,22 @@ typedef struct OuterNode {
     struct OuterNode* next;
 } OuterNode;
 
-InnerNode* createInnerNode(char* pipe_path);
+InnerNode* createInnerNode(int notification_pipe);
 
 OuterNode* createOuterNode(char* key);
 
-void addToInnerList(InnerNode** head, char* data);
+void addToInnerList(InnerNode** head, int notification_pipe);
 
 void addToOuterList(OuterNode** head, char* key, InnerNode* innerList);
 
-void addToList(char* key, char* pipe_path);
+void addToList(char* key, int notification_pipe);
 
-void removeFromList(char* key, char* pipe_path);
+void removeFromList(char* key, int notification_pipe);
 
 void removeKey(char* key);
 
 InnerNode* findKey(char* key);
 
-void freeEverything();
+void cleanupSubscriptions();
 
 #endif

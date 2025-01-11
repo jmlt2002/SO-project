@@ -11,7 +11,6 @@ enum {
   OP_CODE_UNSUBSCRIBE = '4',
   SUCCESS = '0',
   FAILURE = '1',
-  // TODO: use opcodes in the code
 };
 
 #endif  // COMMON_PROTOCOL_H

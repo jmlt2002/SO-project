@@ -7,14 +7,13 @@
 
 OuterNode* subscriptions_head = NULL;
 
-InnerNode* createInnerNode(char* pipe_path) {
-    InnerNode* newNode = (InnerNode*) malloc (sizeof(InnerNode));
+InnerNode* createInnerNode(int notification_pipe) {
+    InnerNode* newNode = (InnerNode*)malloc(sizeof(InnerNode));
     if (!newNode) {
         perror("Failed to allocate memory for inner node");
         exit(EXIT_FAILURE);
     }
-    strncpy(newNode->notification_pipe, pipe_path, MAX_PIPE_PATH_LENGTH - 1);
-    newNode->notification_pipe[MAX_PIPE_PATH_LENGTH - 1] = '\0';
+    newNode->notification_pipe = notification_pipe;
     newNode->next = NULL;
     return newNode;
 }
@@ -36,8 +35,8 @@ OuterNode* createOuterNode(char* key) {
     return newNode;
 }
 
-void addToInnerList(InnerNode** head, char* data) {
-    InnerNode* newNode = createInnerNode(data);
+void addToInnerList(InnerNode** head, int notification_pipe) {
+    InnerNode* newNode = createInnerNode(notification_pipe);
     newNode->next = *head;
     *head = newNode;
 }
@@ -49,32 +48,33 @@ void addToOuterList(OuterNode** head, char* key, InnerNode* innerList) {
     *head = newNode;
 }
 
-void addToList(char* key, char* pipe_path) {
+void addToList(char* key, int notification_pipe) {
     OuterNode* current = subscriptions_head;
     while (current != NULL) {
         if (strcmp(current->key, key) == 0) {
-            addToInnerList(&current->innerList, pipe_path);
+            addToInnerList(&current->innerList, notification_pipe);
             return;
         }
         current = current->next;
     }
-    InnerNode* innerList = createInnerNode(pipe_path);
+    InnerNode* innerList = createInnerNode(notification_pipe);
     addToOuterList(&subscriptions_head, key, innerList);
 }
 
-void removeFromList(char* key, char* pipe_path) {
+void removeFromList(char* key, int notification_pipe) {
     OuterNode* current = subscriptions_head;
     while (current != NULL) {
         if (strcmp(current->key, key) == 0) {
             InnerNode* innerCurrent = current->innerList;
             InnerNode* innerPrev = NULL;
             while (innerCurrent != NULL) {
-                if (strcmp(innerCurrent->notification_pipe, pipe_path) == 0) {
+                if (innerCurrent->notification_pipe == notification_pipe) {
                     if (innerPrev == NULL) {
                         current->innerList = innerCurrent->next;
                     } else {
                         innerPrev->next = innerCurrent->next;
                     }
+                    close(innerCurrent->notification_pipe); // Close the file descriptor
                     free(innerCurrent);
                     return;
                 }
@@ -101,6 +101,7 @@ void removeKey(char* key) {
             while (innerCurrent != NULL) {
                 InnerNode* temp = innerCurrent;
                 innerCurrent = innerCurrent->next;
+                close(temp->notification_pipe); // Close the file descriptor
                 free(temp);
             }
             free(current);
@@ -122,13 +123,14 @@ InnerNode* findKey(char* key) {
     return NULL;
 }
 
-void freeEverything() {
+void cleanupSubscriptions() {
     OuterNode* current = subscriptions_head;
     while (current != NULL) {
         InnerNode* innerCurrent = current->innerList;
         while (innerCurrent != NULL) {
             InnerNode* temp = innerCurrent;
             innerCurrent = innerCurrent->next;
+            close(temp->notification_pipe); // Close the file descriptor
             free(temp);
         }
         OuterNode* temp = current;

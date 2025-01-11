@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 
 #include "constants.h"
 #include "parser.h"
@@ -34,13 +35,36 @@ typedef struct {
   int active_sessions;
 } PCBuffer;
 
+typedef struct {
+  int request_pipe;
+  int response_pipe;
+  int notification_pipe;
+} ActiveClientData;
+
+typedef struct {
+  ActiveClientData data[MAX_SESSION_COUNT];
+  pthread_mutex_t mutex;
+} ActiveClients;
+
 pthread_mutex_t n_current_backups_lock = PTHREAD_MUTEX_INITIALIZER;
 
 size_t active_backups = 0;     // Number of active backups
 size_t max_backups;            // Maximum allowed simultaneous backups
 size_t max_threads;            // Maximum allowed simultaneous threads
 char* jobs_directory = NULL;
+
 PCBuffer pc_buffer;
+ActiveClients active_clients = {{{0}}, PTHREAD_MUTEX_INITIALIZER};
+
+int sigusr1_received = 0;
+
+int deleted_keys = 0;
+typedef struct {
+  int num_processes_checked;
+  pthread_mutex_t mutex;
+} CheckDeletedKeys;
+
+CheckDeletedKeys check_deleted_keys = {0, PTHREAD_MUTEX_INITIALIZER};
 
 BufferData process_register_message(const char *message_buffer) {
   BufferData output = {{0}, {0}, {0}};
@@ -82,152 +106,183 @@ int notify(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_STR
 
     InnerNode* current = findKey(key);
     while (current != NULL) {
-      int pipe = open(current->notification_pipe, O_WRONLY);
-      if (pipe == -1) {
-        fprintf(stderr, "Failed to open pipe %s\n", current->notification_pipe);
-        return -1;
-      }
-
-      write(pipe, key_buffer, 41); 
+      write(current->notification_pipe, key_buffer, 41); 
       if(deleted) {
         // DELETED padded with '\0' until 41 total characters
         char deleted_message[41] = {0};
         snprintf(deleted_message, sizeof(deleted_message), "DELETED");
-        write(pipe, deleted_message, 41);
+        write(current->notification_pipe, deleted_message, 41);
       } else {
-        write(pipe, value_buffer, 41);
+        write(current->notification_pipe, value_buffer, 41);
       }
 
-      close(pipe);
       current = current->next;
     }
   }
   return 0;
 }
 
+int already_subscribed(char* key, char subscribed_keys[MAX_NUMBER_SUB][MAX_STRING_SIZE + 1]) {
+  for (int i = 0; i < MAX_NUMBER_SUB; i++) {
+    if (strcmp(subscribed_keys[i], key) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static void *manage_subscriptions() {
+  __sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGUSR1);
+  pthread_sigmask(SIG_BLOCK, &set, NULL);
+
+  int response_pipe = -1, request_pipe = -1, notification_pipe = -1;
+  char subscribed_keys[MAX_NUMBER_SUB][MAX_STRING_SIZE + 1] = {0};
   int current_subscriptions = 0;
-  int response_pipe, request_pipe;
+
+  printf("New session created\n");
 
   while (1) {
     sem_wait(&pc_buffer.semaphore);
 
     pthread_mutex_lock(&pc_buffer.mutex);
-    if(pc_buffer.active_sessions >= MAX_SESSION_COUNT) {
-      pthread_mutex_unlock(&pc_buffer.mutex);
-      continue;
-    } else {
-      pc_buffer.active_sessions++;
-    }
-
     BufferData args = removeFromBuffer(&pc_buffer.buffer);
     if (args.request_pipe[0] == '\0') {
-      pc_buffer.active_sessions--;
       pthread_mutex_unlock(&pc_buffer.mutex);
       continue;
     }
-    pthread_mutex_unlock(&pc_buffer.mutex);
 
     response_pipe = open(args.response_pipe, O_WRONLY);
     if (response_pipe == -1) {
       fprintf(stderr, "Failed to open response pipe %s\n", args.response_pipe);
-      pthread_exit(NULL);
+      goto cleanup;
     }
     write_str(response_pipe, "10");
 
     request_pipe = open(args.request_pipe, O_RDONLY);
     if (request_pipe == -1) {
       fprintf(stderr, "Failed to open request pipe %s\n", args.request_pipe);
-      close(response_pipe);
-      pthread_exit(NULL);
+      goto cleanup;
     }
 
-    char subscribed_keys[MAX_NUMBER_SUB][MAX_STRING_SIZE + 1] = {0};
-    char buffer[41];
-    ssize_t bytes_read;
-    while (1) {
-      bytes_read = read(request_pipe, buffer, 41);
-      if (bytes_read == -1) {
-        fprintf(stderr, "Failed to read from pipe\n");
+    notification_pipe = open(args.notification_pipe, O_WRONLY);
+    if (notification_pipe == -1) {
+      fprintf(stderr, "Failed to open notification pipe %s\n", args.notification_pipe);
+      goto cleanup;
+    }
+
+    pthread_mutex_lock(&active_clients.mutex);
+    // Add client to active_clients
+    for (int i = 0; i < MAX_SESSION_COUNT; i++) {
+      if (active_clients.data[i].response_pipe == 0) {
+        active_clients.data[i].request_pipe = request_pipe;
+        active_clients.data[i].response_pipe = response_pipe;
+        active_clients.data[i].notification_pipe = notification_pipe;
         break;
       }
+    }
+    pthread_mutex_unlock(&active_clients.mutex);
+    pc_buffer.active_sessions++;
+    pthread_mutex_unlock(&pc_buffer.mutex);
 
-      if (bytes_read < 41 && bytes_read > 0) {
-        if(buffer[0] == OP_CODE_DISCONNECT) {
-          // disconnect
-          break;
-        }
-      } else if (bytes_read == 41) {
-        if(buffer[0] == OP_CODE_SUBSCRIBE) {
-          // subscribe
-          char key[40];
-          strncpy(key, &buffer[1], 40);
-          key[39] = '\0';
-
-          // response
-          if(current_subscriptions >= MAX_NUMBER_SUB || !kvs_find_key(key)) {
-            char message[2];
-            message[0] = OP_CODE_SUBSCRIBE;
-            message[1] = FAILURE;
-            write(response_pipe, message, 2);
-          } else {
-            char message[2];
-            message[0] = OP_CODE_SUBSCRIBE;
-            message[1] = SUCCESS;
-            write(response_pipe, message, 2);
-            addToList(key, args.notification_pipe);
-            current_subscriptions++;
-            strncpy(subscribed_keys[current_subscriptions - 1], key, 40);
-            subscribed_keys[current_subscriptions - 1][40] = '\0';
-          }
-        } else if(buffer[0] == OP_CODE_UNSUBSCRIBE) {
-          // unsubscribe
-          char key[40];
-          strncpy(key, &buffer[1], 40);
-          key[39] = '\0';
-          char message[2];
-          message[0] = OP_CODE_UNSUBSCRIBE;
-
-          if(!kvs_find_key(key) || findKey(key) == NULL) {
-            message[1] = FAILURE;
-            write(response_pipe, message, 2);
-          } else {
-            removeFromList(key, args.notification_pipe);
-            message[1] = SUCCESS;
-            write(response_pipe, message, 2);
-            current_subscriptions--;
-          }
-        }
+    char buffer[41];
+    ssize_t bytes_read;
+    while ((bytes_read = read(request_pipe, buffer, 41)) > 0) {
+      if (bytes_read == -1 || bytes_read == 0) {
+        fprintf(stderr, "Failed to read from request pipe\n");
+        goto cleanup;
       }
 
-      // check if subscribed keys have been deleted
-      for(int i = 0; i < MAX_NUMBER_SUB; i++) {
-        if(subscribed_keys[i][0] != '\0' && findKey(subscribed_keys[i]) == NULL) {
-          removeFromList(subscribed_keys[i], args.notification_pipe);
+      if (buffer[0] == OP_CODE_DISCONNECT) {
+        // disconnect
+        if (write(response_pipe, "20", 2) == -1) {
+          fprintf(stderr, "Response pipe closed unexpectedly.\n");
+        }
+        goto cleanup;
+      } else if (buffer[0] == OP_CODE_SUBSCRIBE) {
+        // subscribe
+        char key[40];
+        strncpy(key, &buffer[1], 40);
+        key[39] = '\0';
+
+        // response
+        char message[2];
+        message[0] = OP_CODE_SUBSCRIBE;
+        if(current_subscriptions >= MAX_NUMBER_SUB ||
+              !kvs_find_key(key) ||
+              already_subscribed(key, subscribed_keys)) {
+          message[1] = FAILURE;
+        } else {
+          message[1] = SUCCESS;
+          addToList(key, notification_pipe);
+          current_subscriptions++;
+          strncpy(subscribed_keys[current_subscriptions - 1], key, 40);
+          subscribed_keys[current_subscriptions - 1][40] = '\0';
+        }
+        if (write(response_pipe, message, 2) == -1) {
+          fprintf(stderr, "Response pipe closed unexpectedly.\n");
+          goto cleanup;
+        }
+      } else if (buffer[0] == OP_CODE_UNSUBSCRIBE) {
+        // unsubscribe
+        char key[40];
+        strncpy(key, &buffer[1], 40);
+        key[39] = '\0';
+
+        // response
+        char message[2];
+        message[0] = OP_CODE_UNSUBSCRIBE;
+        if(!kvs_find_key(key) || findKey(key) == NULL) {
+          message[1] = FAILURE;
+        } else {
+          removeFromList(key, notification_pipe);
+          message[1] = SUCCESS;
           current_subscriptions--;
-          subscribed_keys[i][0] = '\0';
+        }
+        if (write(response_pipe, message, 2) == -1) {
+          fprintf(stderr, "Response pipe closed unexpectedly.\n");
+          goto cleanup;
         }
       }
     }
 
-    // TODO: check disconnect logic
-    write_str(response_pipe, "20");
-    close(request_pipe);
-    close(response_pipe);
+  cleanup:
+    if (request_pipe != -1) close(request_pipe);
+    if (notification_pipe != -1) close(notification_pipe);
+    if (response_pipe != -1) close(response_pipe);
+
     pthread_mutex_lock(&pc_buffer.mutex);
     pc_buffer.active_sessions--;
     pthread_mutex_unlock(&pc_buffer.mutex);
+
+    // remove subscriptions
+    for (int i = 0; i < MAX_NUMBER_SUB; i++) {
+      if (subscribed_keys[i][0] != '\0') {
+        removeKey(subscribed_keys[i]);
+        subscribed_keys[i][0] = '\0';
+      }
+    }
+
+    // remove client from active_clients
+    // (this should already be done due to handling of sigusr1 in main, but just in case)
+    pthread_mutex_lock(&active_clients.mutex);
+    for (int i = 0; i < MAX_SESSION_COUNT; i++) {
+      if (active_clients.data[i].response_pipe == response_pipe) {
+        active_clients.data[i].request_pipe = 0;
+        active_clients.data[i].response_pipe = 0;
+        active_clients.data[i].notification_pipe = 0;
+        break;
+      }
+    }
+    pthread_mutex_unlock(&active_clients.mutex);
   }
 
-  write_str(response_pipe, "20");
-  close(request_pipe);
-  close(response_pipe);
   pthread_exit(NULL);
 }
 
-static void dispatch_session_threads() {
-  // TODO: check if detach logic is correct
 
+static void dispatch_session_threads() {
   for (size_t i = 0; i < MAX_SESSION_COUNT; i++) {
     pthread_t thread;
     if (pthread_create(&thread, NULL, manage_subscriptions, NULL) != 0) {
@@ -383,8 +438,12 @@ static int run_job(int in_fd, int out_fd, char* filename) {
   }
 }
 
-//frees arguments
 static void* get_file(void* arguments) {
+  __sigset_t set;
+  sigemptyset(&set);
+  sigaddset(&set, SIGUSR1);
+  pthread_sigmask(SIG_BLOCK, &set, NULL);
+
   struct SharedData* thread_data = (struct SharedData*) arguments;
   DIR* dir = thread_data->dir;
   char* dir_name = thread_data->dir_name;
@@ -474,7 +533,29 @@ static void dispatch_job_threads(DIR* dir) {
   }
 }
 
+void clean_active_clients() {
+  cleanupSubscriptions();
+  for (int i = 0; i < MAX_SESSION_COUNT; i++) {
+    if (active_clients.data[i].response_pipe != 0) {
+      close(active_clients.data[i].request_pipe);
+      close(active_clients.data[i].response_pipe);
+      close(active_clients.data[i].notification_pipe);
+      active_clients.data[i].request_pipe = 0;
+      active_clients.data[i].response_pipe = 0;
+      active_clients.data[i].notification_pipe = 0;
+    }
+  }
+}
+
+void handle_sigusr1(int signo) {
+  sigusr1_received = signo;
+}
+
 int main(int argc, char** argv) {
+  if(signal(SIGUSR1, handle_sigusr1) == SIG_ERR) {
+    exit(EXIT_FAILURE);
+  }
+
   if (argc < 5) {
     write_str(STDERR_FILENO, "Usage: ");
     write_str(STDERR_FILENO, argv[0]);
@@ -551,6 +632,11 @@ int main(int argc, char** argv) {
     char register_message[121];
     BufferData processed_registry;
 
+    if(sigusr1_received) {
+      clean_active_clients();
+      sigusr1_received = 0;
+    }
+
     while ((bytes_read = (int)read(register_pipe, register_message, 121)) > 0) {
       if (bytes_read == 121 && register_message[0] == OP_CODE_CONNECT) {
         processed_registry = process_register_message(register_message);
@@ -589,7 +675,7 @@ int main(int argc, char** argv) {
     active_backups--;
   }
 
-  sem_destroy(&pc_buffer.semaphore); // Destroy the semaphore
+  sem_destroy(&pc_buffer.semaphore);
   pthread_mutex_destroy(&pc_buffer.mutex);
   kvs_terminate();
 

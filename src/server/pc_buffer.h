@@ -25,6 +25,4 @@ void insertInBuffer(Buffer* q, BufferData data);
 BufferData removeFromBuffer(Buffer* q);
 void destroyBuffer(Buffer* q);
 
-// TODO: cleanup function
-
 #endif
