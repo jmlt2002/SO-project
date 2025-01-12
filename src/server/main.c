@@ -150,7 +150,6 @@ int notify(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_STR
   return 0;
 }
 
-
 int already_subscribed(char* key, char subscribed_keys[MAX_NUMBER_SUB][MAX_STRING_SIZE + 1]) {
   for (int i = 0; i < MAX_NUMBER_SUB; i++) {
     if (strcmp(subscribed_keys[i], key) == 0) {
@@ -239,9 +238,9 @@ static void *manage_subscriptions() {
         if(current_subscriptions >= MAX_NUMBER_SUB ||
             !kvs_find_key(key) ||
             already_subscribed(key, subscribed_keys)) {
-          message[1] = FAILURE;
+          message[1] = '0'; // can't use SUCCESS or FAILURE because they are flipped in comparison to the opcodes
         } else {
-          message[1] = SUCCESS;
+          message[1] = '1';
           addToList(key, notification_pipe);
           current_subscriptions++;
           strncpy(subscribed_keys[current_subscriptions - 1], key, 40);
