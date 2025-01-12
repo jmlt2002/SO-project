@@ -32,6 +32,8 @@ void removeKey(char* key);
 
 InnerNode* findKey(char* key);
 
+void freeInnerList(InnerNode* head);
+
 void cleanupSubscriptions();
 
 #endif

@@ -15,8 +15,6 @@ const char *req_pipe_path_glob, *resp_pipe_path_glob, *notif_pipe_path_glob, *se
 int server_pipe_glob, req_pipe_glob, resp_pipe_glob;
 
 void cleanup() {
-  printf("Cleaning up...\n");
-
   close(server_pipe_glob);
   close(req_pipe_glob);
   close(resp_pipe_glob);

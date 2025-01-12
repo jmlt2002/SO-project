@@ -84,43 +84,72 @@ BufferData process_register_message(const char *message_buffer) {
 int notify(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_STRING_SIZE], int deleted) {
   char* key = NULL;
   char* value = NULL;
-  
+
   for (size_t i = 0; i < num_pairs; i++) {
     key = keys[i];
-    if(values != NULL)
+    if (values != NULL) {
       value = values[i];
+    }
 
     char key_buffer[41];
     strncpy(key_buffer, key, strlen(key));
-    for (size_t j = strlen(key); j < 41; j++) {
-      key_buffer[j] = '\0';
-    }
+    key_buffer[40] = '\0';
 
-    char value_buffer[41];
-    if (values != NULL){
+    char value_buffer[41] = {0};
+    if (values != NULL) {
       strncpy(value_buffer, value, strlen(value));
-      for (size_t k = strlen(value); k < 41; k++) {
-        value_buffer[k] = '\0';
-      }
+      value_buffer[40] = '\0';
     }
 
     InnerNode* current = findKey(key);
     while (current != NULL) {
-      write(current->notification_pipe, key_buffer, 41); 
-      if(deleted) {
-        // DELETED padded with '\0' until 41 total characters
-        char deleted_message[41] = {0};
-        snprintf(deleted_message, sizeof(deleted_message), "DELETED");
-        write(current->notification_pipe, deleted_message, 41);
-      } else {
-        write(current->notification_pipe, value_buffer, 41);
+      int failed = 0;
+
+      if (write(current->notification_pipe, key_buffer, 41) == -1) {
+        fprintf(stderr, "Failed to write key to notification pipe\n");
+        failed = 1;
       }
 
+      // write the value or delete message to the notification pipe
+      if (!failed) {
+        if (deleted) {
+          char deleted_message[41] = {0};
+          snprintf(deleted_message, sizeof(deleted_message), "DELETED");
+          if (write(current->notification_pipe, deleted_message, 41) == -1) {
+            fprintf(stderr, "Failed to write deleted message to notification pipe\n");
+            failed = 1;
+          }
+        } else {
+          if (write(current->notification_pipe, value_buffer, 41) == -1) {
+            fprintf(stderr, "Failed to write value to notification pipe\n");
+            failed = 1;
+          }
+        }
+      }
+
+      if (failed) {
+        pthread_mutex_lock(&active_clients.mutex);
+        for (int j = 0; j < MAX_SESSION_COUNT; j++) {
+          if (active_clients.data[j].notification_pipe == current->notification_pipe) {
+            close(active_clients.data[j].request_pipe);
+            close(active_clients.data[j].response_pipe);
+            close(active_clients.data[j].notification_pipe);
+            active_clients.data[j].request_pipe = 0;
+            active_clients.data[j].response_pipe = 0;
+            active_clients.data[j].notification_pipe = 0;
+            break;
+          }
+        }
+        pthread_mutex_unlock(&active_clients.mutex);
+      }
       current = current->next;
     }
+    freeInnerList(current);
   }
+
   return 0;
 }
+
 
 int already_subscribed(char* key, char subscribed_keys[MAX_NUMBER_SUB][MAX_STRING_SIZE + 1]) {
   for (int i = 0; i < MAX_NUMBER_SUB; i++) {
@@ -140,8 +169,6 @@ static void *manage_subscriptions() {
   int response_pipe = -1, request_pipe = -1, notification_pipe = -1;
   char subscribed_keys[MAX_NUMBER_SUB][MAX_STRING_SIZE + 1] = {0};
   int current_subscriptions = 0;
-
-  printf("New session created\n");
 
   while (1) {
     sem_wait(&pc_buffer.semaphore);
@@ -210,8 +237,8 @@ static void *manage_subscriptions() {
         char message[2];
         message[0] = OP_CODE_SUBSCRIBE;
         if(current_subscriptions >= MAX_NUMBER_SUB ||
-              !kvs_find_key(key) ||
-              already_subscribed(key, subscribed_keys)) {
+            !kvs_find_key(key) ||
+            already_subscribed(key, subscribed_keys)) {
           message[1] = FAILURE;
         } else {
           message[1] = SUCCESS;
@@ -265,7 +292,6 @@ static void *manage_subscriptions() {
     }
 
     // remove client from active_clients
-    // (this should already be done due to handling of sigusr1 in main, but just in case)
     pthread_mutex_lock(&active_clients.mutex);
     for (int i = 0; i < MAX_SESSION_COUNT; i++) {
       if (active_clients.data[i].response_pipe == response_pipe) {
@@ -280,7 +306,6 @@ static void *manage_subscriptions() {
 
   pthread_exit(NULL);
 }
-
 
 static void dispatch_session_threads() {
   for (size_t i = 0; i < MAX_SESSION_COUNT; i++) {
@@ -613,12 +638,6 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  int register_pipe = open(register_pipe_path, O_RDONLY);
-  if (register_pipe == -1) {
-    fprintf(stderr, "Failed to open register pipe\n");
-    return 1;
-  }
-
   initBuffer(&pc_buffer.buffer);
   sem_init(&pc_buffer.semaphore, 0, 1);
   pthread_mutex_init(&pc_buffer.mutex, NULL);
@@ -626,6 +645,12 @@ int main(int argc, char** argv) {
 
   dispatch_session_threads();
   dispatch_job_threads(dir);
+
+  int register_pipe = open(register_pipe_path, O_RDONLY);
+  if (register_pipe == -1) {
+    fprintf(stderr, "Failed to open register pipe\n");
+    return 1;
+  }
 
   while(1) {
     int bytes_read;

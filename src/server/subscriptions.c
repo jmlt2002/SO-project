@@ -4,8 +4,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <pthread.h>
 
-OuterNode* subscriptions_head = NULL;
+typedef struct {
+    OuterNode* node;
+    pthread_mutex_t mutex;
+} SubscriptionsHead;
+
+SubscriptionsHead subscriptions_head = {NULL, PTHREAD_MUTEX_INITIALIZER};
 
 InnerNode* createInnerNode(int notification_pipe) {
     InnerNode* newNode = (InnerNode*)malloc(sizeof(InnerNode));
@@ -49,20 +55,24 @@ void addToOuterList(OuterNode** head, char* key, InnerNode* innerList) {
 }
 
 void addToList(char* key, int notification_pipe) {
-    OuterNode* current = subscriptions_head;
+    pthread_mutex_lock(&subscriptions_head.mutex);
+    OuterNode* current = subscriptions_head.node;
     while (current != NULL) {
         if (strcmp(current->key, key) == 0) {
             addToInnerList(&current->innerList, notification_pipe);
+            pthread_mutex_unlock(&subscriptions_head.mutex);
             return;
         }
         current = current->next;
     }
     InnerNode* innerList = createInnerNode(notification_pipe);
-    addToOuterList(&subscriptions_head, key, innerList);
+    addToOuterList(&subscriptions_head.node, key, innerList);
+    pthread_mutex_unlock(&subscriptions_head.mutex);
 }
 
 void removeFromList(char* key, int notification_pipe) {
-    OuterNode* current = subscriptions_head;
+    pthread_mutex_lock(&subscriptions_head.mutex);
+    OuterNode* current = subscriptions_head.node;
     while (current != NULL) {
         if (strcmp(current->key, key) == 0) {
             InnerNode* innerCurrent = current->innerList;
@@ -74,8 +84,8 @@ void removeFromList(char* key, int notification_pipe) {
                     } else {
                         innerPrev->next = innerCurrent->next;
                     }
-                    close(innerCurrent->notification_pipe); // Close the file descriptor
                     free(innerCurrent);
+                    pthread_mutex_unlock(&subscriptions_head.mutex);
                     return;
                 }
                 innerPrev = innerCurrent;
@@ -84,15 +94,17 @@ void removeFromList(char* key, int notification_pipe) {
         }
         current = current->next;
     }
+    pthread_mutex_unlock(&subscriptions_head.mutex);
 }
 
 void removeKey(char* key) {
-    OuterNode* current = subscriptions_head;
+    pthread_mutex_lock(&subscriptions_head.mutex);
+    OuterNode* current = subscriptions_head.node;
     OuterNode* prev = NULL;
     while (current != NULL) {
         if (strcmp(current->key, key) == 0) {
             if (prev == NULL) {
-                subscriptions_head = current->next;
+                subscriptions_head.node = current->next;
             } else {
                 prev->next = current->next;
             }
@@ -101,41 +113,72 @@ void removeKey(char* key) {
             while (innerCurrent != NULL) {
                 InnerNode* temp = innerCurrent;
                 innerCurrent = innerCurrent->next;
-                close(temp->notification_pipe); // Close the file descriptor
                 free(temp);
             }
             free(current);
+            pthread_mutex_unlock(&subscriptions_head.mutex);
             return;
         }
         prev = current;
         current = current->next;
     }
+    pthread_mutex_unlock(&subscriptions_head.mutex);
+}
+
+InnerNode* copyInnerList(InnerNode* head) {
+    InnerNode* newHead = NULL;
+    InnerNode* current = head;
+    InnerNode* prev = NULL;
+    while (current != NULL) {
+        InnerNode* newNode = createInnerNode(current->notification_pipe);
+        if (prev == NULL) {
+            newHead = newNode;
+        } else {
+            prev->next = newNode;
+        }
+        prev = newNode;
+        current = current->next;
+    }
+    return newHead;
 }
 
 InnerNode* findKey(char* key) {
-    OuterNode* current = subscriptions_head;
+    pthread_mutex_lock(&subscriptions_head.mutex);
+    OuterNode* current = subscriptions_head.node;
     while (current != NULL) {
         if (strcmp(current->key, key) == 0) {
-            return current->innerList;
+            // return copy of the inner list
+            InnerNode* copy = copyInnerList(current->innerList);
+            pthread_mutex_unlock(&subscriptions_head.mutex);
+            return copy;
         }
         current = current->next;
     }
+    pthread_mutex_unlock(&subscriptions_head.mutex);
     return NULL;
 }
 
+void freeInnerList(InnerNode* head) {
+    InnerNode* current = head;
+    while (current != NULL) {
+        InnerNode* temp = current;
+        current = current->next;
+        free(temp);
+    }
+}
+
 void cleanupSubscriptions() {
-    OuterNode* current = subscriptions_head;
+    OuterNode* current = subscriptions_head.node;
     while (current != NULL) {
         InnerNode* innerCurrent = current->innerList;
         while (innerCurrent != NULL) {
             InnerNode* temp = innerCurrent;
             innerCurrent = innerCurrent->next;
-            close(temp->notification_pipe); // Close the file descriptor
             free(temp);
         }
         OuterNode* temp = current;
         current = current->next;
-        free(temp->key); // Free the dynamically allocated key
+        free(temp->key);
         free(temp);
     }
 }

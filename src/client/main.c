@@ -117,7 +117,6 @@ int main(int argc, char* argv[]) {
         pthread_mutex_unlock(&lock);
         pthread_join(notif_thread, NULL);
         pthread_mutex_destroy(&lock);
-        printf("Disconnected from server\n");
         return 0;
 
       case CMD_SUBSCRIBE:
