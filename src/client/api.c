@@ -155,12 +155,12 @@ int kvs_subscribe(const char* key) {
     fprintf(stderr, "Failed to read response: subscribe\n");
     cleanup();
     return 1;
-  } else if (response[1] != SUCCESS) {
-    fprintf(stdout, "Server returned 1 for operation: subscribe\n");
+  } else if (response[1] != '1') {
+    fprintf(stdout, "Server returned 0 for operation: subscribe\n");
     return 1;
   }
 
-  fprintf(stdout, "Server returned 0 for operation: subscribe\n");
+  fprintf(stdout, "Server returned 1 for operation: subscribe\n");
   return 0;
 }
 
@@ -180,11 +180,11 @@ int kvs_unsubscribe(const char* key) {
       fprintf(stderr, "Failed to read response: unsubscribe\n");
       cleanup();
       return 1;
-  } else if (response[0] != OP_CODE_UNSUBSCRIBE || response[1] != SUCCESS) {
-      fprintf(stdout, "Server returned 1 for operation: unsubscribe\n");
+  } else if (response[0] != OP_CODE_UNSUBSCRIBE || response[1] != '1') {
+      fprintf(stdout, "Server returned 0 for operation: unsubscribe\n");
       return 1;
   }
 
-  fprintf(stdout, "Server returned 0 for operation: unsubscribe\n");
+  fprintf(stdout, "Server returned 1 for operation: unsubscribe\n");
   return 0;
 }
