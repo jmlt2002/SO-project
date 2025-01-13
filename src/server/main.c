@@ -84,20 +84,34 @@ BufferData process_register_message(const char *message_buffer) {
 int notify(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_STRING_SIZE], int deleted) {
   char* key = NULL;
   char* value = NULL;
+  char already_notified[num_pairs][MAX_STRING_SIZE];
+  int index = 0;
 
-  for (size_t i = 0; i < num_pairs; i++) {
+  // check backwards only to notify the last change
+  for (int i = (int)num_pairs - 1; i >= 0; i--) {
+    int already_exists = 0;
+    for (int j = 0; j < index; j++) {
+      if (strcmp(keys[i], already_notified[j]) == 0) {
+        already_exists = 1;
+        break;
+      }
+    }
+    if (already_exists) {
+      continue;
+    }
+
     key = keys[i];
     if (values != NULL) {
       value = values[i];
     }
 
-    char key_buffer[41];
-    strncpy(key_buffer, key, strlen(key));
+    char key_buffer[41] = {0};
+    strncpy(key_buffer, key, sizeof(key_buffer) - 1);
     key_buffer[40] = '\0';
 
     char value_buffer[41] = {0};
     if (values != NULL) {
-      strncpy(value_buffer, value, strlen(value));
+      strncpy(value_buffer, value, sizeof(value_buffer) - 1);
       value_buffer[40] = '\0';
     }
 
@@ -125,6 +139,10 @@ int notify(size_t num_pairs, char keys[][MAX_STRING_SIZE], char values[][MAX_STR
             failed = 1;
           }
         }
+        // store the key in already_notified
+        strncpy(already_notified[index], key, MAX_STRING_SIZE - 1);
+        already_notified[index][MAX_STRING_SIZE - 1] = '\0';
+        index++;
       }
 
       if (failed) {
