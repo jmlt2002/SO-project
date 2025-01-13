@@ -56,7 +56,7 @@ char* jobs_directory = NULL;
 PCBuffer pc_buffer;
 ActiveClients active_clients = {{{0}}, PTHREAD_MUTEX_INITIALIZER};
 
-int sigusr1_received = 0;
+volatile sig_atomic_t sigusr1_received = 0;
 
 int deleted_keys = 0;
 typedef struct {
@@ -222,9 +222,7 @@ static void *manage_subscriptions() {
 
       if (buffer[0] == OP_CODE_DISCONNECT) {
         // disconnect
-        if (write(response_pipe, "20", 2) == -1) {
-          fprintf(stderr, "Response pipe closed unexpectedly.\n");
-        }
+        write(response_pipe, "20", 2);
         goto cleanup;
       } else if (buffer[0] == OP_CODE_SUBSCRIBE) {
         // subscribe
@@ -247,7 +245,6 @@ static void *manage_subscriptions() {
           subscribed_keys[current_subscriptions - 1][40] = '\0';
         }
         if (write(response_pipe, message, 2) == -1) {
-          fprintf(stderr, "Response pipe closed unexpectedly.\n");
           goto cleanup;
         }
       } else if (buffer[0] == OP_CODE_UNSUBSCRIBE) {
@@ -260,24 +257,19 @@ static void *manage_subscriptions() {
         char message[2];
         message[0] = OP_CODE_UNSUBSCRIBE;
         if(!kvs_find_key(key) || findKey(key) == NULL) {
-          message[1] = FAILURE;
+          message[1] = '0'; // can't use SUCCESS or FAILURE because they are flipped in comparison to the opcodes
         } else {
           removeFromList(key, notification_pipe);
-          message[1] = SUCCESS;
+          message[1] = '1';
           current_subscriptions--;
         }
         if (write(response_pipe, message, 2) == -1) {
-          fprintf(stderr, "Response pipe closed unexpectedly.\n");
           goto cleanup;
         }
       }
     }
 
   cleanup:
-    if (request_pipe != -1) close(request_pipe);
-    if (notification_pipe != -1) close(notification_pipe);
-    if (response_pipe != -1) close(response_pipe);
-
     pthread_mutex_lock(&pc_buffer.mutex);
     pc_buffer.active_sessions--;
     pthread_mutex_unlock(&pc_buffer.mutex);
@@ -294,6 +286,9 @@ static void *manage_subscriptions() {
     pthread_mutex_lock(&active_clients.mutex);
     for (int i = 0; i < MAX_SESSION_COUNT; i++) {
       if (active_clients.data[i].response_pipe == response_pipe) {
+        close(active_clients.data[i].request_pipe);
+        close(active_clients.data[i].response_pipe);
+        close(active_clients.data[i].notification_pipe);
         active_clients.data[i].request_pipe = 0;
         active_clients.data[i].response_pipe = 0;
         active_clients.data[i].notification_pipe = 0;
@@ -558,7 +553,6 @@ static void dispatch_job_threads(DIR* dir) {
 }
 
 void clean_active_clients() {
-  cleanupSubscriptions();
   for (int i = 0; i < MAX_SESSION_COUNT; i++) {
     if (active_clients.data[i].response_pipe != 0) {
       close(active_clients.data[i].request_pipe);
@@ -569,14 +563,16 @@ void clean_active_clients() {
       active_clients.data[i].notification_pipe = 0;
     }
   }
+  cleanupSubscriptions();
 }
 
-void handle_sigusr1(int signo) {
-  sigusr1_received = signo;
+void handle_sigusr1() {
+  sigusr1_received = 1;
 }
 
 int main(int argc, char** argv) {
   if(signal(SIGUSR1, handle_sigusr1) == SIG_ERR) {
+    printf("Failed to set signal handler\n");
     exit(EXIT_FAILURE);
   }
 

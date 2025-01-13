@@ -168,6 +168,7 @@ void freeInnerList(InnerNode* head) {
 }
 
 void cleanupSubscriptions() {
+    pthread_mutex_lock(&subscriptions_head.mutex);
     OuterNode* current = subscriptions_head.node;
     while (current != NULL) {
         InnerNode* innerCurrent = current->innerList;
@@ -181,4 +182,6 @@ void cleanupSubscriptions() {
         free(temp->key);
         free(temp);
     }
+    subscriptions_head.node = NULL;
+    pthread_mutex_unlock(&subscriptions_head.mutex);
 }
